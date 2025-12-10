@@ -37,7 +37,6 @@ pub use gpu::GpuNbodyEntropy;
 
 use rand_core::{RngCore, SeedableRng};
 use std::f64::consts::PI;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default number of particles in the simulation
 pub const DEFAULT_PARTICLE_COUNT: usize = 256;
@@ -139,14 +138,12 @@ impl QueryType {
 pub struct NbodyEntropy {
     particles: Vec<Particle>,
     particle_count: usize,
-    /// Internal state mixed with query outputs via BLAKE3
+    /// Internal state mixed with query outputs
     state: [u8; 32],
     /// Counter for additional entropy
     counter: u64,
     /// Connection threshold for graph queries
     connection_threshold: f64,
-    /// BLAKE3 hasher key
-    hasher_key: [u8; 32],
     /// Time step for physics simulation
     dt: f64,
 }
@@ -167,22 +164,18 @@ impl Default for NbodyEntropy {
 }
 
 impl NbodyEntropy {
-    /// Create a new system, seeded from system time
+    /// Create a new system, seeded from OS entropy (/dev/urandom on Linux)
     pub fn new() -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        Self::from_seed(seed.to_le_bytes())
+        let mut seed = [0u8; 8];
+        getrandom::fill(&mut seed).expect("Failed to get entropy from OS");
+        Self::from_seed(seed)
     }
 
     /// Create with custom particle count
     pub fn with_particle_count(particle_count: usize) -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+        let mut seed = [0u8; 8];
+        getrandom::fill(&mut seed).expect("Failed to get entropy from OS");
+        let seed = u64::from_le_bytes(seed);
 
         let mut rng = Self::from_seed(seed.to_le_bytes());
         rng.set_particle_count(particle_count);
@@ -391,46 +384,47 @@ impl NbodyEntropy {
         false
     }
 
-    /// Mix data into the internal state
+    /// Mix data into state using xorshift and multiply operations (matches GPU approach)
     #[inline]
     fn mix(&mut self, data: &[u8]) {
-        if self.counter % 128 != 0 {
-            let data_u64 = if data.len() >= 8 {
-                u64::from_le_bytes(data[0..8].try_into().unwrap())
-            } else {
-                let mut buf = [0u8; 8];
-                buf[..data.len()].copy_from_slice(data);
-                u64::from_le_bytes(buf)
-            };
-
-            let mut state_u64 = u64::from_le_bytes(self.state[0..8].try_into().unwrap());
-            state_u64 = state_u64.wrapping_add(data_u64);
-            state_u64 ^= state_u64 << 13;
-            state_u64 ^= state_u64 >> 7;
-            state_u64 ^= state_u64 << 17;
-            state_u64 = state_u64.wrapping_mul(0x2545F4914F6CDD1D);
-            self.state[0..8].copy_from_slice(&state_u64.to_le_bytes());
-
-            let mut state_u64_2 = u64::from_le_bytes(self.state[8..16].try_into().unwrap());
-            state_u64_2 ^= state_u64.rotate_left(23);
-            state_u64_2 = state_u64_2.wrapping_mul(0x9E3779B97F4A7C15);
-            self.state[8..16].copy_from_slice(&state_u64_2.to_le_bytes());
-
-            self.state.rotate_left(5);
+        let data_u64 = if data.len() >= 8 {
+            u64::from_le_bytes(data[0..8].try_into().unwrap())
         } else {
-            let mut hasher = blake3::Hasher::new_keyed(&self.hasher_key);
-            hasher.update(&self.state);
-            hasher.update(data);
-            hasher.update(&self.counter.to_le_bytes());
-            self.state = *hasher.finalize().as_bytes();
+            let mut buf = [0u8; 8];
+            buf[..data.len()].copy_from_slice(data);
+            u64::from_le_bytes(buf)
+        };
+
+        // Mix into first 8 bytes
+        let mut state_u64 = u64::from_le_bytes(self.state[0..8].try_into().unwrap());
+        state_u64 = state_u64.wrapping_add(data_u64);
+        state_u64 ^= state_u64 << 13;
+        state_u64 ^= state_u64 >> 7;
+        state_u64 ^= state_u64 << 17;
+        state_u64 = state_u64.wrapping_mul(0x2545F4914F6CDD1D);
+        self.state[0..8].copy_from_slice(&state_u64.to_le_bytes());
+
+        // Mix into second 8 bytes
+        let mut state_u64_2 = u64::from_le_bytes(self.state[8..16].try_into().unwrap());
+        state_u64_2 ^= state_u64.rotate_left(23);
+        state_u64_2 = state_u64_2.wrapping_mul(0x9E3779B97F4A7C15);
+        self.state[8..16].copy_from_slice(&state_u64_2.to_le_bytes());
+
+        // Mix into third 8 bytes (deeper mixing every 128 iterations)
+        if self.counter % 128 == 0 {
+            let mut state_u64_3 = u64::from_le_bytes(self.state[16..24].try_into().unwrap());
+            state_u64_3 ^= state_u64_2.rotate_left(17);
+            state_u64_3 = state_u64_3.wrapping_mul(0xBF58476D1CE4E5B9);
+            state_u64_3 ^= self.counter;
+            self.state[16..24].copy_from_slice(&state_u64_3.to_le_bytes());
+
+            let mut state_u64_4 = u64::from_le_bytes(self.state[24..32].try_into().unwrap());
+            state_u64_4 ^= state_u64_3.rotate_left(11);
+            state_u64_4 = state_u64_4.wrapping_mul(0x94D049BB133111EB);
+            self.state[24..32].copy_from_slice(&state_u64_4.to_le_bytes());
         }
 
-        if self.counter % 8192 == 0 {
-            let mut key_hasher = blake3::Hasher::new();
-            key_hasher.update(&self.state);
-            key_hasher.update(b"key_update");
-            self.hasher_key = *key_hasher.finalize().as_bytes();
-        }
+        self.state.rotate_left(5);
     }
 
     /// Perturb a particle based on feedback
@@ -514,24 +508,30 @@ impl NbodyEntropy {
     }
 }
 
+/// Splitmix64 seed expansion (same as GPU version)
+#[inline]
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
 impl SeedableRng for NbodyEntropy {
     type Seed = [u8; 8];
 
     fn from_seed(seed: Self::Seed) -> Self {
-        // Expand seed using BLAKE3
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&seed);
-        hasher.update(b"chaos_entropy_init_v2");
-        let initial_state = *hasher.finalize().as_bytes();
+        // Expand seed using splitmix64 (matches GPU approach)
+        let mut state = u64::from_le_bytes(seed);
 
-        // Generate hasher key
-        let mut key_hasher = blake3::Hasher::new();
-        key_hasher.update(&seed);
-        key_hasher.update(b"hasher_key_v2");
-        let hasher_key = *key_hasher.finalize().as_bytes();
+        // Generate 32-byte initial state
+        let mut initial_state = [0u8; 32];
+        for chunk in initial_state.chunks_exact_mut(8) {
+            chunk.copy_from_slice(&splitmix64(&mut state).to_le_bytes());
+        }
 
         // Use expanded state to seed particle generation
-        let mut state = u64::from_le_bytes(initial_state[0..8].try_into().unwrap());
         let mut particles = Vec::with_capacity(MAX_PARTICLE_COUNT);
 
         for i in 0..MAX_PARTICLE_COUNT {
@@ -571,7 +571,6 @@ impl SeedableRng for NbodyEntropy {
             state: initial_state,
             counter: 0,
             connection_threshold: 0.15,
-            hasher_key,
             dt: 0.01,
         }
     }

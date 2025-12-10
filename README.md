@@ -42,10 +42,13 @@ The slingshot mechanic is key - without it, particles eventually clump into a si
 
 ### Entropy Generation
 
-1. Run N-body physics simulation on GPU
-2. Hash particle positions/velocities with BLAKE3
-3. Extract random bytes from hash output
-4. Repeat
+1. Seed from OS entropy (`/dev/urandom` on Linux)
+2. Run N-body physics simulation
+3. Mix particle positions/velocities with xorshift operations
+4. Extract random bytes from mixed state
+5. Repeat
+
+This acts as an **entropy amplifier** - a small amount of true randomness (8 bytes) is expanded into a high-throughput stream (~5 GB/s) through chaotic dynamics.
 
 ## Performance
 
@@ -98,10 +101,10 @@ cargo run --release --features viz --bin nbody-viz
 use nbody_entropy::NbodyEntropy;
 use rand_core::{RngCore, SeedableRng};
 
-// Create from system time
+// Create from OS entropy (/dev/urandom on Linux)
 let mut rng = NbodyEntropy::new();
 
-// Or from explicit seed
+// Or from explicit seed (for reproducible sequences)
 let mut rng = NbodyEntropy::from_seed([1, 2, 3, 4, 5, 6, 7, 8]);
 
 // Generate random values (implements RngCore)
@@ -117,9 +120,9 @@ rng.fill_bytes(&mut buf);
 ```rust
 #[cfg(feature = "gpu")]
 use nbody_entropy::GpuNbodyEntropy;
-use rand_core::{RngCore, SeedableRng};
+use rand_core::RngCore;
 
-// GPU version - same API, ~5000x faster
+// GPU version - seeded from OS entropy, ~5000x faster
 let mut rng = GpuNbodyEntropy::new();
 let value = rng.next_u64();
 ```

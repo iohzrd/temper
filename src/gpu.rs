@@ -12,7 +12,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use rand_core::{RngCore, SeedableRng};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 use wgpu::util::DeviceExt;
 
 /// Simple seed mixer using splitmix64
@@ -106,12 +106,11 @@ impl std::fmt::Debug for GpuNbodyEntropy {
 }
 
 impl GpuNbodyEntropy {
+    /// Create a new GPU entropy generator, seeded from OS entropy (/dev/urandom on Linux)
     pub fn new() -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-        Self::from_seed(seed.to_le_bytes())
+        let mut seed = [0u8; 8];
+        getrandom::fill(&mut seed).expect("Failed to get entropy from OS");
+        Self::from_seed(seed)
     }
 
     fn submit_work(&mut self, buffer_idx: usize) {
