@@ -1,0 +1,28 @@
+[package]
+name = "nbody-entropy"
+version = "0.1.0"
+edition = "2024"
+description = "Experimental entropy extraction from N-body particle simulation"
+license = "MIT"
+
+[features]
+default = []
+gpu = ["wgpu", "bytemuck", "pollster"]
+viz = ["iced"]
+
+[dependencies]
+blake3 = "1.5"
+rand_core = "0.9"
+
+# GPU acceleration (optional)
+wgpu = { version = "27", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
+
+# Visualization (optional)
+iced = { version = "0.14.0", features = ["canvas", "tokio"], optional = true }
+
+[[bin]]
+name = "nbody-viz"
+path = "src/viz.rs"
+required-features = ["viz"]
