@@ -61,11 +61,12 @@ impl ThermodynamicMode {
 const MAX_DIM: usize = 64;
 const MAX_PARTICLES: usize = 500_000;  // Support up to 500k particles (GPU memory dependent)
 
+/// Particle state in the thermodynamic system
+/// Size: 64*4 + 4 + 4 + 8 = 272 bytes (optimized from 528 by removing unused velocity)
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct ThermodynamicParticle {
     pub pos: [f32; MAX_DIM],
-    pub vel: [f32; MAX_DIM],
     pub energy: f32,
     pub entropy_bits: u32,
     pub _pad: [f32; 2],
@@ -130,7 +131,6 @@ impl ThermodynamicSystem {
         // Initialize particles randomly in [-4, 4]
         let mut particles = vec![ThermodynamicParticle {
             pos: [0.0; MAX_DIM],
-            vel: [0.0; MAX_DIM],
             energy: 0.0,
             entropy_bits: 0,
             _pad: [0.0; 2],
@@ -403,7 +403,6 @@ impl ThermodynamicSystem {
         // Initialize particles randomly in [-4, 4]
         let mut particles = vec![ThermodynamicParticle {
             pos: [0.0; MAX_DIM],
-            vel: [0.0; MAX_DIM],
             energy: 0.0,
             entropy_bits: 0,
             _pad: [0.0; 2],

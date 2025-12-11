@@ -32,8 +32,8 @@ fn main() {
     println!("{}", "-".repeat(62));
 
     for &n in &particle_counts {
-        // Estimate memory: each particle is ~528 bytes (64*4 pos + 64*4 vel + 4+4+8 extras)
-        let mem_mb = (n * 528) as f64 / 1_000_000.0;
+        // Estimate memory: each particle is ~272 bytes (64*4 pos + 4+4+8 extras)
+        let mem_mb = (n * 272) as f64 / 1_000_000.0;
 
         let result = std::panic::catch_unwind(|| {
             let mut system = ThermodynamicSystem::with_loss_function(n, dim, 1.0, LossFunction::Rastrigin);
@@ -238,7 +238,7 @@ fn main() {
     println!("{}", "-".repeat(50));
 
     for &n in &test_counts {
-        let mem_mb = (n * 528) as f64 / 1_000_000.0;
+        let mem_mb = (n * 272) as f64 / 1_000_000.0;
 
         let start = Instant::now();
         let result = std::panic::catch_unwind(|| {

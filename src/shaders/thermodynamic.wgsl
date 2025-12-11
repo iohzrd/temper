@@ -11,9 +11,9 @@
 // with a temperature parameter that controls the exploration/exploitation tradeoff.
 
 // MAX_DIM = 64 to support deeper neural networks
+// Struct size: 64*4 + 4 + 4 + 8 = 272 bytes (down from 528 with unused vel array)
 struct Particle {
     pos: array<f32, 64>,     // Position in parameter space (NN weights)
-    vel: array<f32, 64>,     // Velocity (for momentum-based dynamics)
     energy: f32,             // Current loss/energy value
     entropy_bits: u32,       // Accumulated entropy bits (for extraction)
     _pad1: f32,              // Padding for alignment
