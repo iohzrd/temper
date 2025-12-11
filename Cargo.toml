@@ -115,3 +115,8 @@ required-features = ["gpu"]
 name = "thermodynamic-8d"
 path = "src/bin/thermodynamic-8d.rs"
 required-features = ["gpu"]
+
+[[bin]]
+name = "high-dim-benchmark"
+path = "src/bin/high-dim-benchmark.rs"
+required-features = ["gpu"]

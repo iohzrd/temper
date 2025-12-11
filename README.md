@@ -116,6 +116,44 @@ for step in 0..5000 {
 }
 ```
 
+### Adaptive Annealing
+
+The `AdaptiveScheduler` automatically adjusts cooling rate based on optimization progress:
+
+```rust
+use nbody_entropy::{AdaptiveScheduler, ThermodynamicSystem, LossFunction};
+
+let mut system = ThermodynamicSystem::with_loss_function(
+    500, 8, 5.0, LossFunction::Rastrigin
+);
+let mut scheduler = AdaptiveScheduler::new(
+    5.0,   // t_start
+    0.001, // t_end
+    0.8,   // convergence_threshold
+    8      // dimension (affects parameter scaling)
+);
+
+for _ in 0..5000 {
+    let particles = system.read_particles();
+    let min_energy = particles.iter()
+        .filter(|p| !p.energy.is_nan())
+        .map(|p| p.energy)
+        .fold(f32::MAX, f32::min);
+
+    let temp = scheduler.update(min_energy);
+    system.set_temperature(temp);
+    system.step();
+}
+
+println!("Reheats: {}, Converged: {}", scheduler.reheat_count(), scheduler.is_converged());
+```
+
+Features:
+- **Convergence detection**: Cools faster when near optimum
+- **Stall detection**: Slows cooling when stuck
+- **Reheating**: Escapes local minima on deceptive landscapes
+- **Dimension-aware**: Parameters scale with problem dimensionality
+
 ### Performance Tuning
 
 ```rust
@@ -182,6 +220,20 @@ The adaptive scheduler outperforms fixed exponential cooling on deceptive landsc
 
 On Schwefel, the global minimum at (420.97, 420.97) is far from the origin. Fixed schedules cool too fast and get trapped; adaptive detects stalls and reheats to escape local minima.
 
+### High-Dimensional Benchmark
+
+Adaptive scheduling advantage peaks in mid-dimensions (8D-16D) where escaping local minima is challenging:
+
+| Dimension | Fixed | Adaptive | Winner | Reheats |
+|-----------|-------|----------|--------|---------|
+| 2D | 0.00 | 0.00 | Tie | 0 |
+| 4D | 0.76 | 1.00 | Fixed | 0 |
+| **8D** | 9.95 | **4.99** | **Adaptive by 4.96** | 35 |
+| **16D** | 41.79 | **32.85** | **Adaptive by 8.94** | 25 |
+| 32D | 121.40 | 122.39 | Fixed | 0 |
+
+Run with: `cargo run --release --features gpu --bin high-dim-benchmark`
+
 ## Entropy Generation
 
 At high temperature (T >> 1), the system generates cryptographic-quality randomness:
@@ -199,11 +251,12 @@ cargo run --release --features gpu -- raw 10000000 | ent
 ```
 src/
 ├── lib.rs                # Public API exports
-├── thermodynamic.rs      # Core unified system
+├── thermodynamic.rs      # Core unified system + AdaptiveScheduler
 ├── shaders/
 │   └── thermodynamic.wgsl # GPU compute shader
 └── bin/                  # Executable demos
     ├── adaptive-annealing.rs   # Fixed vs adaptive comparison
+    ├── high-dim-benchmark.rs   # Dimension scaling benchmark
     ├── rastrigin-annealing.rs  # Rastrigin visualization
     ├── schwefel-annealing.rs   # Schwefel visualization
     ├── thermodynamic-viz.rs    # Interactive visualization
@@ -212,6 +265,15 @@ src/
     ├── bayesian-sampling.rs    # Posterior sampling demo
     └── ...                     # More benchmarks
 ```
+
+### Public API
+
+- `ThermodynamicSystem` - GPU-accelerated particle system
+- `AdaptiveScheduler` - Dimension-aware temperature scheduling
+- `LossFunction` - Built-in loss functions (Rastrigin, Schwefel, MLP, etc.)
+- `ThermodynamicParticle` - Particle state (position, velocity, energy)
+- `ThermodynamicMode` - Operating mode (Optimize/Sample/Entropy)
+- `ThermodynamicStats` - System statistics
 
 ## Dependencies
 
