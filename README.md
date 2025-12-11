@@ -2,19 +2,18 @@
 
 A GPU-accelerated **unified thermodynamic particle system** that demonstrates optimization, Bayesian sampling, and entropy generation are all the same algorithm at different temperatures.
 
-![N-Body Visualization](image.png)
-
 ## Core Thesis
 
 Traditional approaches treat optimization, MCMC sampling, and random number generation as separate problems. This project shows they're all **points on a temperature continuum**:
 
-| Temperature | Mode | Behavior |
-|-------------|------|----------|
-| T → 0 | **Optimize** | Particles converge to loss minima (simulated annealing) |
-| T ~ 0.1 | **Sample** | Particles sample from Boltzmann distribution p(x) ∝ exp(-E(x)/T) |
-| T >> 1 | **Entropy** | Chaotic exploration extracts random bits |
+| Temperature | Mode         | Behavior                                                         |
+| ----------- | ------------ | ---------------------------------------------------------------- |
+| T → 0       | **Optimize** | Particles converge to loss minima (simulated annealing)          |
+| T ~ 0.1     | **Sample**   | Particles sample from Boltzmann distribution p(x) ∝ exp(-E(x)/T) |
+| T >> 1      | **Entropy**  | Chaotic exploration extracts random bits                         |
 
 The unified update equation:
+
 ```
 dx = -γ∇E(x)·dt + repulsion·dt + √(2γT·dt)·dW
 ```
@@ -22,13 +21,17 @@ dx = -γ∇E(x)·dt + repulsion·dt + √(2γT·dt)·dW
 ## Features
 
 ### Neural Network Training
+
 Train real MLPs using particle-based optimization:
+
 - **XOR classification**: 9-parameter MLP achieves 100% accuracy
 - **Circles classification**: 37-parameter deep MLP (2→4→4→1) achieves 100% accuracy
 - **Spiral classification**: Challenging non-linear separation
 
 ### Optimization Benchmarks
+
 Built-in loss functions for testing:
+
 - Sphere (convex baseline)
 - Rosenbrock (narrow valley)
 - Rastrigin (highly multimodal)
@@ -36,13 +39,16 @@ Built-in loss functions for testing:
 - Schwefel (deceptive global minimum far from origin)
 
 ### Advanced Techniques
+
 - **Adaptive Annealing**: Smart temperature scheduling with convergence detection and reheating
 - **Parallel Tempering**: Replica exchange between temperature levels for better global search
 - **Bayesian Posterior Sampling**: Verified Boltzmann distribution sampling at moderate temperatures
 - **Simulated Annealing**: Automatic temperature scheduling
 
 ### GPU Performance
+
 Optimized for large particle counts:
+
 - **O(nK) subsampling**: Reduces O(n²) repulsion to O(nK) with configurable K
 - **21x speedup** with K=0 (skip repulsion for pure optimization)
 - **6-7x speedup** with K=64 (default for SVGD sampling)
@@ -191,6 +197,7 @@ println!("Reheats: {}, Converged: {}", scheduler.reheat_count(), scheduler.is_co
 ```
 
 Features:
+
 - **Convergence detection**: Cools faster when near optimum
 - **Stall detection**: Slows cooling when stuck
 - **Reheating**: Escapes local minima on deceptive landscapes
@@ -227,12 +234,14 @@ let mut system = ThermodynamicSystem::with_expr(500, 4, 1.0, griewank);
 ```
 
 Available primitives:
+
 - **Variables**: `var()`, `dim_index()`, `dim_count()`, `pi()`
 - **Math**: `sin()`, `cos()`, `exp()`, `ln()`, `sqrt()`, `abs()`, `tanh()`
 - **Operators**: `+`, `-`, `*`, `/`, `.powi()`, `.powf()`
 - **Reductions**: `sum_dims(|x, i| ...)`, `prod_dims(|x, i| ...)`, `sum_pairs(|x, y| ...)`
 
 Pre-built expressions:
+
 - **Classic**: `sphere()`, `rastrigin()`, `rosenbrock()`, `ackley()`, `griewank()`, `levy()`
 - **New**: `michalewicz()`, `styblinski_tang()`, `dixon_price()`, `zakharov()`, `sum_squares()`, `trid()`
 - **2D**: `matyas()`, `three_hump_camel()`, `easom()`, `drop_wave()`
@@ -244,18 +253,18 @@ cargo run --release --features gpu --bin custom-expr-demo
 
 ## Available Loss Functions
 
-| Loss | Enum | Dim | Description |
-|------|------|-----|-------------|
-| Neural Net 2D | `NeuralNet2D` | 2 | Simple 2-param network |
-| Multimodal | `Multimodal` | N | 2^(N/2) global minima |
-| Rosenbrock | `Rosenbrock` | N | Banana valley, min at (1,...,1) |
-| Rastrigin | `Rastrigin` | N | Highly multimodal, min at origin |
-| Ackley | `Ackley` | N | Flat outer region with central hole |
-| Sphere | `Sphere` | N | Simple convex, min at origin |
-| MLP XOR | `MlpXor` | 9 | Real MLP on XOR problem |
-| MLP Spiral | `MlpSpiral` | 9 | Spiral classification |
-| MLP Deep | `MlpDeep` | 37 | 3-layer MLP on circles |
-| Schwefel | `Schwefel` | N | Deceptive, global min at (420.97,...) |
+| Loss          | Enum          | Dim | Description                           |
+| ------------- | ------------- | --- | ------------------------------------- |
+| Neural Net 2D | `NeuralNet2D` | 2   | Simple 2-param network                |
+| Multimodal    | `Multimodal`  | N   | 2^(N/2) global minima                 |
+| Rosenbrock    | `Rosenbrock`  | N   | Banana valley, min at (1,...,1)       |
+| Rastrigin     | `Rastrigin`   | N   | Highly multimodal, min at origin      |
+| Ackley        | `Ackley`      | N   | Flat outer region with central hole   |
+| Sphere        | `Sphere`      | N   | Simple convex, min at origin          |
+| MLP XOR       | `MlpXor`      | 9   | Real MLP on XOR problem               |
+| MLP Spiral    | `MlpSpiral`   | 9   | Spiral classification                 |
+| MLP Deep      | `MlpDeep`     | 37  | 3-layer MLP on circles                |
+| Schwefel      | `Schwefel`    | N   | Deceptive, global min at (420.97,...) |
 
 ## Benchmark Results
 
@@ -278,20 +287,20 @@ SCALING WITH PARTICLE COUNT (K=64 samples)
 
 ### Optimization Quality
 
-| Test | Result |
-|------|--------|
-| Deep MLP (37 params) | 100% accuracy on circles |
-| XOR MLP | 100% accuracy |
+| Test                            | Result                           |
+| ------------------------------- | -------------------------------- |
+| Deep MLP (37 params)            | 100% accuracy on circles         |
+| XOR MLP                         | 100% accuracy                    |
 | Parallel Tempering vs Annealing | Wins on Rastrigin (3.15 vs 9.18) |
 
 ### Adaptive vs Fixed Annealing
 
 The adaptive scheduler outperforms fixed exponential cooling on deceptive landscapes:
 
-| Function | Fixed Schedule | Adaptive Schedule | Winner |
-|----------|---------------|-------------------|--------|
-| Rastrigin | 0.00 (T=0.05 at 54%) | 0.00 (T=0.001 at 54%) | **Adaptive** (faster convergence) |
-| Schwefel | 118.68 (stuck at local min) | 0.00 (found global min) | **Adaptive** (16 reheats) |
+| Function  | Fixed Schedule              | Adaptive Schedule       | Winner                            |
+| --------- | --------------------------- | ----------------------- | --------------------------------- |
+| Rastrigin | 0.00 (T=0.05 at 54%)        | 0.00 (T=0.001 at 54%)   | **Adaptive** (faster convergence) |
+| Schwefel  | 118.68 (stuck at local min) | 0.00 (found global min) | **Adaptive** (16 reheats)         |
 
 On Schwefel, the global minimum at (420.97, 420.97) is far from the origin. Fixed schedules cool too fast and get trapped; adaptive detects stalls and reheats to escape local minima.
 
@@ -299,13 +308,13 @@ On Schwefel, the global minimum at (420.97, 420.97) is far from the origin. Fixe
 
 Adaptive scheduling advantage peaks in mid-dimensions (8D-16D) where escaping local minima is challenging:
 
-| Dimension | Fixed | Adaptive | Winner | Reheats |
-|-----------|-------|----------|--------|---------|
-| 2D | 0.00 | 0.00 | Tie | 0 |
-| 4D | 0.76 | 1.00 | Fixed | 0 |
-| **8D** | 9.95 | **4.99** | **Adaptive by 4.96** | 35 |
-| **16D** | 41.79 | **32.85** | **Adaptive by 8.94** | 25 |
-| 32D | 121.40 | 122.39 | Fixed | 0 |
+| Dimension | Fixed  | Adaptive  | Winner               | Reheats |
+| --------- | ------ | --------- | -------------------- | ------- |
+| 2D        | 0.00   | 0.00      | Tie                  | 0       |
+| 4D        | 0.76   | 1.00      | Fixed                | 0       |
+| **8D**    | 9.95   | **4.99**  | **Adaptive by 4.96** | 35      |
+| **16D**   | 41.79  | **32.85** | **Adaptive by 8.94** | 25      |
+| 32D       | 121.40 | 122.39    | Fixed                | 0       |
 
 Run with: `cargo run --release --features gpu --bin high-dim-benchmark`
 
@@ -325,24 +334,24 @@ cargo run --release --features gpu --bin thermodynamic-stream 2>/dev/null | head
 
 **dieharder Statistical Tests** (all PASSED):
 
-| Test | p-value | Assessment |
-|------|---------|------------|
-| diehard_birthdays | 0.958 | PASSED |
-| diehard_rank_6x8 | 0.328 | PASSED |
-| sts_serial (1-16) | 0.11-0.99 | ALL PASSED |
-| rgb_kstest_test | 0.864 | PASSED |
-| diehard_count_1s_str | 0.522 | PASSED |
-| diehard_craps | 0.753 | PASSED |
+| Test                 | p-value   | Assessment |
+| -------------------- | --------- | ---------- |
+| diehard_birthdays    | 0.958     | PASSED     |
+| diehard_rank_6x8     | 0.328     | PASSED     |
+| sts_serial (1-16)    | 0.11-0.99 | ALL PASSED |
+| rgb_kstest_test      | 0.864     | PASSED     |
+| diehard_count_1s_str | 0.522     | PASSED     |
+| diehard_craps        | 0.753     | PASSED     |
 
 **`ent` Analysis** (1MB sample):
 
-| Metric | Value | Ideal | Quality |
-|--------|-------|-------|---------|
-| Entropy | **7.999807** bits/byte | 8.0 | Near-perfect |
-| Chi-square | 28.13% | 10-90% | Pass |
-| Mean | 127.5247 | 127.5 | Perfect |
-| Pi estimate | 3.1398 (0.06% err) | 3.1416 | Excellent |
-| Serial correlation | 0.0016 | 0.0 | Near-zero |
+| Metric             | Value                  | Ideal  | Quality      |
+| ------------------ | ---------------------- | ------ | ------------ |
+| Entropy            | **7.999807** bits/byte | 8.0    | Near-perfect |
+| Chi-square         | 28.13%                 | 10-90% | Pass         |
+| Mean               | 127.5247               | 127.5  | Perfect      |
+| Pi estimate        | 3.1398 (0.06% err)     | 3.1416 | Excellent    |
+| Serial correlation | 0.0016                 | 0.0    | Near-zero    |
 
 **Throughput**: ~3.2M random u32s/second from GPU particle dynamics.
 
