@@ -1,3 +1,4 @@
+pub mod expr;
 pub mod thermodynamic;
 
 pub use thermodynamic::{

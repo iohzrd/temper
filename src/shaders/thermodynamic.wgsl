@@ -607,6 +607,10 @@ fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
             // Schwefel - deceptive with far-off global minimum
             p.energy = schwefel_loss(p.pos, uniforms.dim);
         }
+        case 10u: {
+            // Custom expression-based loss function (injected at shader compile time)
+            p.energy = custom_loss(p.pos, uniforms.dim);
+        }
         default: {
             p.energy = nn_loss_2d(p.pos[0], p.pos[1]);
             loss_grad_2d = nn_gradient_2d(p.pos[0], p.pos[1]);
@@ -682,6 +686,10 @@ fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
             case 9u: {
                 // Schwefel
                 grad = schwefel_gradient(p.pos, uniforms.dim, d);
+            }
+            case 10u: {
+                // Custom expression-based gradient
+                grad = custom_gradient(p.pos, uniforms.dim, d);
             }
             default: {
                 if d == 0u {

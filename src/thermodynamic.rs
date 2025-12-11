@@ -35,6 +35,7 @@ pub enum LossFunction {
     MlpSpiral = 7,     // Real MLP on spiral classification
     MlpDeep = 8,       // Deep MLP: 2->4->4->1 (37 params) on circles dataset
     Schwefel = 9,      // Deceptive - global min at (420.97, ...) far from origin
+    Custom = 10,       // Custom expression-based loss function
 }
 
 impl ThermodynamicMode {
@@ -112,6 +113,9 @@ pub struct ThermodynamicSystem {
     repulsion_samples: u32,  // 0 = skip, 64 = sample 64 particles (default)
     // Entropy extraction
     entropy_pool: Vec<u32>,
+    // Custom loss function WGSL code (if using LossFunction::Custom)
+    #[allow(dead_code)]
+    custom_loss_wgsl: Option<String>,
 }
 
 impl ThermodynamicSystem {
@@ -340,6 +344,7 @@ impl ThermodynamicSystem {
             loss_fn: LossFunction::default(),
             repulsion_samples,
             entropy_pool: Vec::new(),
+            custom_loss_wgsl: None,
         }
     }
 
@@ -353,6 +358,254 @@ impl ThermodynamicSystem {
         let mut sys = Self::new(particle_count, dim, temperature);
         sys.set_loss_function(loss_fn);
         sys
+    }
+
+    /// Create with a custom expression-based loss function
+    ///
+    /// # Example
+    /// ```ignore
+    /// use nbody_entropy::expr::*;
+    /// use nbody_entropy::ThermodynamicSystem;
+    ///
+    /// // Griewank function
+    /// let griewank = const_(1.0)
+    ///     + sum_dims(|x, _| x.powi(2) / 4000.0)
+    ///     - prod_dims(|x, i| cos(x / sqrt(i + 1.0)));
+    ///
+    /// let mut system = ThermodynamicSystem::with_expr(
+    ///     500, 4, 1.0, griewank
+    /// );
+    /// ```
+    pub fn with_expr(
+        particle_count: usize,
+        dim: usize,
+        temperature: f32,
+        expr: crate::expr::Expr,
+    ) -> Self {
+        assert!(particle_count <= MAX_PARTICLES);
+        assert!(dim <= MAX_DIM);
+
+        // Initialize particles randomly in [-4, 4]
+        let mut particles = vec![ThermodynamicParticle {
+            pos: [0.0; MAX_DIM],
+            vel: [0.0; MAX_DIM],
+            energy: 0.0,
+            entropy_bits: 0,
+            _pad: [0.0; 2],
+        }; particle_count];
+
+        let mut seed = 42u64;
+        for p in particles.iter_mut() {
+            for d in 0..dim {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                p.pos[d] = -4.0 + (seed & 0xFFFF) as f32 / 65535.0 * 8.0;
+            }
+        }
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .expect("No GPU adapter found");
+
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor::default(),
+        ))
+        .expect("Failed to create device");
+
+        let particle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("particles"),
+            contents: bytemuck::cast_slice(&particles),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let repulsion_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("repulsion"),
+            size: (particle_count * std::mem::size_of::<ThermodynamicParticle>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+
+        let entropy_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("entropy"),
+            size: (particle_count * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("staging"),
+            size: (particle_count * std::mem::size_of::<ThermodynamicParticle>()) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let entropy_staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("entropy_staging"),
+            size: (particle_count * 4) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let (gamma, repulsion_strength, kernel_bandwidth, dt) = Self::params_for_temperature(temperature, dim);
+        let repulsion_samples = if temperature < 0.01 { 0 } else { 64 };
+
+        let uniforms = Uniforms {
+            particle_count: particle_count as u32,
+            dim: dim as u32,
+            gamma,
+            temperature,
+            repulsion_strength,
+            kernel_bandwidth,
+            dt,
+            seed: 12345,
+            mode: ThermodynamicMode::from_temperature(temperature) as u32,
+            loss_fn: LossFunction::Custom as u32,
+            repulsion_samples,
+            _pad: 0.0,
+        };
+
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("uniforms"),
+            contents: bytemuck::bytes_of(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Generate custom shader with injected loss function
+        let custom_wgsl = expr.to_wgsl();
+        let base_shader = include_str!("shaders/thermodynamic.wgsl");
+        let full_shader = format!("{}\n\n{}", custom_wgsl, base_shader);
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("thermodynamic_custom"),
+            source: wgpu::ShaderSource::Wgsl(full_shader.clone().into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("thermodynamic_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("thermodynamic_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: particle_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: repulsion_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: entropy_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("thermodynamic_pipeline_layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let repulsion_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("repulsion_pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("compute_repulsion"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let update_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("update_pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("update_particles"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        Self {
+            device,
+            queue,
+            particle_buffer,
+            repulsion_buffer,
+            entropy_buffer,
+            staging_buffer,
+            entropy_staging,
+            uniform_buffer,
+            repulsion_pipeline,
+            update_pipeline,
+            bind_group,
+            particle_count,
+            dim,
+            temperature,
+            gamma,
+            repulsion_strength,
+            kernel_bandwidth,
+            dt,
+            step: 0,
+            loss_fn: LossFunction::Custom,
+            repulsion_samples,
+            entropy_pool: Vec::new(),
+            custom_loss_wgsl: Some(full_shader),
+        }
     }
 
     /// Get adaptive parameters for a given temperature

@@ -167,6 +167,36 @@ system.set_repulsion_samples(64); // Sample 64 particles
 system.set_repulsion_samples(particle_count as u32); // Full O(n²)
 ```
 
+### Custom Loss Functions (Expression DSL)
+
+Define custom loss functions using a composable DSL that compiles to GPU-accelerated WGSL:
+
+```rust
+use nbody_entropy::expr::*;
+use nbody_entropy::ThermodynamicSystem;
+
+// Griewank function: 1 + sum(x²/4000) - prod(cos(x/√(i+1)))
+let griewank = const_(1.0)
+    + sum_dims(|x, _| x.powi(2) / 4000.0)
+    - prod_dims(|x, i| cos(x / sqrt(i + 1.0)));
+
+// Create system with custom expression
+let mut system = ThermodynamicSystem::with_expr(500, 4, 1.0, griewank);
+```
+
+Available primitives:
+- **Variables**: `var()`, `dim_index()`, `dim_count()`, `pi()`
+- **Math**: `sin()`, `cos()`, `exp()`, `ln()`, `sqrt()`, `abs()`, `tanh()`
+- **Operators**: `+`, `-`, `*`, `/`, `.powi()`, `.powf()`
+- **Reductions**: `sum_dims(|x, i| ...)`, `prod_dims(|x, i| ...)`, `sum_pairs(|x, y| ...)`
+
+Pre-built expressions: `sphere()`, `rastrigin()`, `rosenbrock()`, `ackley()`, `griewank()`, `levy()`
+
+```bash
+# Run custom expression demo
+cargo run --release --features gpu --bin custom-expr-demo
+```
+
 ## Available Loss Functions
 
 | Loss | Enum | Dim | Description |
