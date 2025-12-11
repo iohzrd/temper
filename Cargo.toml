@@ -2,9 +2,8 @@
 name = "nbody-entropy"
 version = "0.1.0"
 edition = "2024"
-description = "GPU-accelerated entropy extraction from N-body particle simulation"
+description = "GPU-accelerated thermodynamic particle system for optimization, sampling, and entropy"
 license = "MIT"
-default-run = "nbody-entropy"
 
 [features]
 default = ["gpu"]
@@ -23,97 +22,96 @@ pollster = { version = "0.4", optional = true }
 # Visualization (optional)
 iced = { version = "0.14.0", features = ["canvas", "tokio"], optional = true }
 
-[[bin]]
-name = "nbody-viz"
-path = "src/viz.rs"
-required-features = ["viz"]
-
-[[bin]]
-name = "gpu-svgd-viz"
-path = "src/gpu_svgd_viz.rs"
-required-features = ["viz", "gpu"]
-
+# Benchmarks
 [[bin]]
 name = "benchmark"
-path = "src/benchmark.rs"
+path = "src/bin/benchmark.rs"
 required-features = ["gpu"]
-
-[[bin]]
-name = "thermodynamic-viz"
-path = "src/thermodynamic_viz.rs"
-required-features = ["viz", "gpu"]
 
 [[bin]]
 name = "thermodynamic-benchmark"
-path = "src/thermodynamic_benchmark.rs"
-required-features = ["gpu"]
-
-[[bin]]
-name = "annealing-demo"
-path = "src/annealing_demo.rs"
-required-features = ["viz", "gpu"]
-
-[[bin]]
-name = "thermodynamic-stream"
-path = "src/thermodynamic_stream.rs"
-required-features = ["gpu"]
-
-[[bin]]
-name = "thermodynamic-8d"
-path = "src/thermodynamic_8d.rs"
+path = "src/bin/thermodynamic-benchmark.rs"
 required-features = ["gpu"]
 
 [[bin]]
 name = "classic-benchmark"
-path = "src/classic_benchmark.rs"
+path = "src/bin/classic-benchmark.rs"
 required-features = ["gpu"]
 
 [[bin]]
 name = "nn-benchmark"
-path = "src/nn_benchmark.rs"
+path = "src/bin/nn-benchmark.rs"
 required-features = ["gpu"]
 
 [[bin]]
 name = "deep-nn-benchmark"
-path = "src/deep_nn_benchmark.rs"
+path = "src/bin/deep-nn-benchmark.rs"
 required-features = ["gpu"]
+
+# Visualizations
+[[bin]]
+name = "thermodynamic-viz"
+path = "src/bin/thermodynamic-viz.rs"
+required-features = ["viz", "gpu"]
 
 [[bin]]
-name = "optimizer-comparison"
-path = "src/optimizer_comparison.rs"
-required-features = ["gpu"]
+name = "annealing-demo"
+path = "src/bin/annealing-demo.rs"
+required-features = ["viz", "gpu"]
 
-[[bin]]
-name = "parallel-tempering"
-path = "src/parallel_tempering.rs"
-required-features = ["gpu"]
-
-[[bin]]
-name = "bayesian-sampling"
-path = "src/bayesian_sampling.rs"
-required-features = ["gpu"]
-
-[[bin]]
-name = "hyperparam-tuning"
-path = "src/hyperparam_tuning.rs"
-required-features = ["gpu"]
-
+# Annealing visualizations
 [[bin]]
 name = "rastrigin-annealing"
-path = "src/rastrigin_annealing.rs"
+path = "src/bin/rastrigin-annealing.rs"
 required-features = ["viz", "gpu"]
 
 [[bin]]
 name = "ackley-annealing"
-path = "src/ackley_annealing.rs"
+path = "src/bin/ackley-annealing.rs"
 required-features = ["viz", "gpu"]
 
 [[bin]]
 name = "rosenbrock-annealing"
-path = "src/rosenbrock_annealing.rs"
+path = "src/bin/rosenbrock-annealing.rs"
 required-features = ["viz", "gpu"]
 
 [[bin]]
 name = "schwefel-annealing"
-path = "src/schwefel_annealing.rs"
+path = "src/bin/schwefel-annealing.rs"
 required-features = ["viz", "gpu"]
+
+[[bin]]
+name = "adaptive-annealing"
+path = "src/bin/adaptive-annealing.rs"
+required-features = ["viz", "gpu"]
+
+# Advanced demos
+[[bin]]
+name = "optimizer-comparison"
+path = "src/bin/optimizer-comparison.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "parallel-tempering"
+path = "src/bin/parallel-tempering.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "bayesian-sampling"
+path = "src/bin/bayesian-sampling.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "hyperparam-tuning"
+path = "src/bin/hyperparam-tuning.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "thermodynamic-stream"
+path = "src/bin/thermodynamic-stream.rs"
+required-features = ["gpu"]
+
+[[bin]]
+name = "thermodynamic-8d"
+path = "src/bin/thermodynamic-8d.rs"
+required-features = ["gpu"]
