@@ -282,30 +282,457 @@ impl std::ops::Div<f32> for Expr {
 // ============================================================================
 
 impl Expr {
-    /// Generate complete WGSL loss function
+    /// Generate complete WGSL loss function with analytical gradients
     pub fn to_wgsl(&self) -> String {
+        self.to_wgsl_with_options(true)
+    }
+
+    /// Generate WGSL with option for analytical or numerical gradients
+    pub fn to_wgsl_with_options(&self, analytical: bool) -> String {
         let mut counter = 0;
         let mut helpers = Vec::new();
         let body = self.to_wgsl_with_helpers("x", "i", &mut counter, &mut helpers);
 
-        let helpers_code = helpers.join("\n\n");
+        let (all_helpers, grad_body) = if analytical {
+            // Generate analytical gradient helpers
+            let mut grad_counter = 500;
+            let mut grad_helpers = Vec::new();
+            let grad_body = self.to_wgsl_gradient(&mut grad_counter, &mut grad_helpers);
+            ([helpers, grad_helpers].concat().join("\n\n"), grad_body)
+        } else {
+            // Use numerical gradient (fallback)
+            (helpers.join("\n\n"), "numerical_gradient(pos, dim, d_idx)".to_string())
+        };
 
-        format!(
-            r#"{helpers_code}
+        let numerical_helper = if !analytical {
+            r#"
 
-fn custom_loss(pos: array<f32, 64>, dim: u32) -> f32 {{
-    return {body};
-}}
-
-fn custom_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
+fn numerical_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {
     let eps = 0.001;
     var pos_plus = pos;
     var pos_minus = pos;
     pos_plus[d_idx] = pos[d_idx] + eps;
     pos_minus[d_idx] = pos[d_idx] - eps;
     return (custom_loss(pos_plus, dim) - custom_loss(pos_minus, dim)) / (2.0 * eps);
-}}"#
+}"#
+        } else {
+            ""
+        };
+
+        format!(
+            r#"{all_helpers}
+
+fn custom_loss(pos: array<f32, 64>, dim: u32) -> f32 {{
+    return {body};
+}}
+
+fn custom_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
+    return {grad_body};
+}}{numerical_helper}"#
         )
+    }
+
+    /// Generate WGSL code for analytical gradient ∂f/∂pos[d_idx]
+    fn to_wgsl_gradient(&self, counter: &mut u32, helpers: &mut Vec<String>) -> String {
+        match self {
+            // Constants have zero gradient
+            Expr::Const(_) | Expr::Pi | Expr::DimIndex | Expr::DimCount => "0.0".to_string(),
+
+            // Var is x[i] in the loop context - gradient is 1 when i == d_idx
+            // This is handled specially in reduction contexts
+            Expr::Var => "1.0".to_string(),
+
+            // Negation: d(-f)/dx = -df/dx
+            Expr::Neg(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" { "0.0".to_string() } else { format!("(-{})", de) }
+            }
+
+            // Absolute value: d|f|/dx = sign(f) * df/dx
+            Expr::Abs(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("abs_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return sign({inner}) * {de}; }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // Trigonometric: d(sin f)/dx = cos(f) * df/dx
+            Expr::Sin(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("sin_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return cos({inner}) * {de}; }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // d(cos f)/dx = -sin(f) * df/dx
+            Expr::Cos(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("cos_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return -sin({inner}) * {de}; }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // d(tan f)/dx = sec²(f) * df/dx = df/dx / cos²(f)
+            Expr::Tan(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("tan_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ let c = cos({inner}); return {de} / (c * c); }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // d(exp f)/dx = exp(f) * df/dx
+            Expr::Exp(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("exp_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return exp({inner}) * {de}; }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // d(ln f)/dx = df/dx / f
+            Expr::Ln(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("ln_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return {de} / {inner}; }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // d(sqrt f)/dx = df/dx / (2 * sqrt(f))
+            Expr::Sqrt(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("sqrt_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return {de} / (2.0 * sqrt({inner})); }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // d(tanh f)/dx = (1 - tanh²(f)) * df/dx
+            Expr::Tanh(e) => {
+                let de = e.to_wgsl_gradient(counter, helpers);
+                if de == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    *counter += 1;
+                    let fn_name = format!("tanh_grad_{}", counter);
+                    let inner = e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ let t = tanh({inner}); return (1.0 - t * t) * {de}; }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // Floor, Ceil, Sign have zero gradient (piecewise constant)
+            Expr::Floor(_) | Expr::Ceil(_) | Expr::Sign(_) => "0.0".to_string(),
+
+            // Addition: d(f + g)/dx = df/dx + dg/dx
+            Expr::Add(a, b) => {
+                let da = a.to_wgsl_gradient(counter, helpers);
+                let db = b.to_wgsl_gradient(counter, helpers);
+                match (da.as_str(), db.as_str()) {
+                    ("0.0", "0.0") => "0.0".to_string(),
+                    ("0.0", _) => db,
+                    (_, "0.0") => da,
+                    _ => format!("({da} + {db})")
+                }
+            }
+
+            // Subtraction: d(f - g)/dx = df/dx - dg/dx
+            Expr::Sub(a, b) => {
+                let da = a.to_wgsl_gradient(counter, helpers);
+                let db = b.to_wgsl_gradient(counter, helpers);
+                match (da.as_str(), db.as_str()) {
+                    ("0.0", "0.0") => "0.0".to_string(),
+                    ("0.0", _) => format!("(-{db})"),
+                    (_, "0.0") => da,
+                    _ => format!("({da} - {db})")
+                }
+            }
+
+            // Product rule: d(f * g)/dx = f * dg/dx + g * df/dx
+            Expr::Mul(a, b) => {
+                let da = a.to_wgsl_gradient(counter, helpers);
+                let db = b.to_wgsl_gradient(counter, helpers);
+                let fa = a.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                let fb = b.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                match (da.as_str(), db.as_str()) {
+                    ("0.0", "0.0") => "0.0".to_string(),
+                    ("0.0", _) => format!("({fa} * {db})"),
+                    (_, "0.0") => format!("({fb} * {da})"),
+                    _ => {
+                        *counter += 1;
+                        let fn_name = format!("mul_grad_{}", counter);
+                        helpers.push(format!(
+                            "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return {fa} * {db} + {fb} * {da}; }}"
+                        ));
+                        format!("{fn_name}(pos, dim, d_idx)")
+                    }
+                }
+            }
+
+            // Quotient rule: d(f/g)/dx = (g * df/dx - f * dg/dx) / g²
+            Expr::Div(a, b) => {
+                let da = a.to_wgsl_gradient(counter, helpers);
+                let db = b.to_wgsl_gradient(counter, helpers);
+                let fa = a.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                let fb = b.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                match (da.as_str(), db.as_str()) {
+                    ("0.0", "0.0") => "0.0".to_string(),
+                    ("0.0", _) => {
+                        *counter += 1;
+                        let fn_name = format!("div_grad_{}", counter);
+                        helpers.push(format!(
+                            "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return -{fa} * {db} / ({fb} * {fb}); }}"
+                        ));
+                        format!("{fn_name}(pos, dim, d_idx)")
+                    }
+                    (_, "0.0") => format!("({da} / {fb})"),
+                    _ => {
+                        *counter += 1;
+                        let fn_name = format!("div_grad_{}", counter);
+                        helpers.push(format!(
+                            "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ let g = {fb}; return ({da} * g - {fa} * {db}) / (g * g); }}"
+                        ));
+                        format!("{fn_name}(pos, dim, d_idx)")
+                    }
+                }
+            }
+
+            // Power rule: d(f^g)/dx = f^g * (g * df/dx / f + ln(f) * dg/dx)
+            // Special case: if g is constant n, d(f^n)/dx = n * f^(n-1) * df/dx
+            Expr::Pow(base, exp) => {
+                let dbase = base.to_wgsl_gradient(counter, helpers);
+                let dexp = exp.to_wgsl_gradient(counter, helpers);
+                let fbase = base.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                let fexp = exp.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+
+                match (dbase.as_str(), dexp.as_str()) {
+                    ("0.0", "0.0") => "0.0".to_string(),
+                    (_, "0.0") => {
+                        // Constant exponent: n * f^(n-1) * df/dx
+                        *counter += 1;
+                        let fn_name = format!("pow_grad_{}", counter);
+                        helpers.push(format!(
+                            "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return {fexp} * pow({fbase}, {fexp} - 1.0) * {dbase}; }}"
+                        ));
+                        format!("{fn_name}(pos, dim, d_idx)")
+                    }
+                    ("0.0", _) => {
+                        // Constant base: f^g * ln(f) * dg/dx
+                        *counter += 1;
+                        let fn_name = format!("pow_grad_{}", counter);
+                        helpers.push(format!(
+                            "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return pow({fbase}, {fexp}) * log({fbase}) * {dexp}; }}"
+                        ));
+                        format!("{fn_name}(pos, dim, d_idx)")
+                    }
+                    _ => {
+                        // General case
+                        *counter += 1;
+                        let fn_name = format!("pow_grad_{}", counter);
+                        helpers.push(format!(
+                            "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ let f = {fbase}; let g = {fexp}; let fg = pow(f, g); return fg * (g * {dbase} / f + log(f) * {dexp}); }}"
+                        ));
+                        format!("{fn_name}(pos, dim, d_idx)")
+                    }
+                }
+            }
+
+            // Min/Max have subgradients; use conditional
+            Expr::Min(a, b) => {
+                let da = a.to_wgsl_gradient(counter, helpers);
+                let db = b.to_wgsl_gradient(counter, helpers);
+                if da == "0.0" && db == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    let fa = a.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    let fb = b.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    *counter += 1;
+                    let fn_name = format!("min_grad_{}", counter);
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return select({db}, {da}, {fa} < {fb}); }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            Expr::Max(a, b) => {
+                let da = a.to_wgsl_gradient(counter, helpers);
+                let db = b.to_wgsl_gradient(counter, helpers);
+                if da == "0.0" && db == "0.0" {
+                    "0.0".to_string()
+                } else {
+                    let fa = a.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    let fb = b.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
+                    *counter += 1;
+                    let fn_name = format!("max_grad_{}", counter);
+                    helpers.push(format!(
+                        "fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{ return select({da}, {db}, {fa} < {fb}); }}"
+                    ));
+                    format!("{fn_name}(pos, dim, d_idx)")
+                }
+            }
+
+            // Mod: d(a % b)/dx = da/dx (assuming b is constant)
+            Expr::Mod(a, _b) => {
+                a.to_wgsl_gradient(counter, helpers)
+            }
+
+            // SumDims: d/dx[j] sum_i f(x[i], i) = df(x[j], j)/dx[j]
+            // Only the term where i == d_idx contributes
+            Expr::SumDims(f) => {
+                *counter += 1;
+                let fn_name = format!("sum_grad_{}", counter);
+
+                // Get the body expression and its gradient
+                let body_expr = f(Expr::Var, Expr::DimIndex);
+                let mut body_counter = 600 + *counter * 10;
+                let body_grad = body_expr.to_wgsl_gradient(&mut body_counter, helpers);
+
+                helpers.push(format!(
+                    r#"fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
+    // Gradient of sum_i f(x[i], i) w.r.t. x[d_idx] is just df/dx at i=d_idx
+    return {body_grad};
+}}"#
+                ));
+                format!("{fn_name}(pos, dim, d_idx)")
+            }
+
+            // ProdDims: d/dx[j] prod_i f(x[i], i) = prod * (df_j/dx / f_j)
+            // Using logarithmic differentiation
+            Expr::ProdDims(f) => {
+                *counter += 1;
+                let fn_name = format!("prod_grad_{}", counter);
+                let loss_fn = format!("prod_loss_{}", counter);
+
+                // Get body expression
+                let body_expr = f(Expr::Var, Expr::DimIndex);
+                let mut body_counter = 700 + *counter * 10;
+                let body_code = body_expr.to_wgsl_with_helpers("x", "i", &mut body_counter, helpers);
+                let body_grad = body_expr.to_wgsl_gradient(&mut body_counter, helpers);
+
+                // First, create a helper to compute the full product
+                helpers.push(format!(
+                    r#"fn {loss_fn}(pos: array<f32, 64>, dim: u32) -> f32 {{
+    var result = 1.0;
+    for (var i = 0u; i < dim; i = i + 1u) {{
+        let x = pos[i];
+        result = result * {body_code};
+    }}
+    return result;
+}}"#
+                ));
+
+                // Then the gradient using d(prod)/dx[j] = prod * (df_j/f_j)
+                helpers.push(format!(
+                    r#"fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
+    let prod = {loss_fn}(pos, dim);
+    let x = pos[d_idx];
+    let i = d_idx;
+    let f_j = {body_code};
+    let df_j = {body_grad};
+    return prod * df_j / f_j;
+}}"#
+                ));
+                format!("{fn_name}(pos, dim, d_idx)")
+            }
+
+            // SumPairs: d/dx[j] sum_i f(x[i], x[i+1])
+            // This requires computing df/dx and df/dy separately, which our DSL doesn't track.
+            // Use numerical gradient for this case.
+            Expr::SumPairs(f) => {
+                *counter += 1;
+                let fn_name = format!("pair_grad_{}", counter);
+                let loss_fn = format!("pair_loss_{}", counter);
+
+                // Get body expression for loss computation
+                let body_expr = f(Expr::Var, Expr::Var);
+                let mut body_counter = 800 + *counter * 10;
+                let body_code = body_expr.to_wgsl_with_helpers("x", "i", &mut body_counter, helpers);
+
+                // Create the loss function helper
+                helpers.push(format!(
+                    r#"fn {loss_fn}(pos: array<f32, 64>, dim: u32) -> f32 {{
+    var result = 0.0;
+    for (var i = 0u; i < dim - 1u; i = i + 1u) {{
+        let x = pos[i];
+        let y = pos[i + 1u];
+        _ = y;
+        result = result + {body_code};
+    }}
+    return result;
+}}"#
+                ));
+
+                // Numerical gradient for sum_pairs (df/dx requires knowing both x and y roles)
+                helpers.push(format!(
+                    r#"fn {fn_name}(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
+    let eps = 0.001;
+    var pos_plus = pos;
+    var pos_minus = pos;
+    pos_plus[d_idx] = pos[d_idx] + eps;
+    pos_minus[d_idx] = pos[d_idx] - eps;
+    return ({loss_fn}(pos_plus, dim) - {loss_fn}(pos_minus, dim)) / (2.0 * eps);
+}}"#
+                ));
+
+                format!("{fn_name}(pos, dim, d_idx)")
+            }
+        }
     }
 
     /// Generate WGSL code with helper functions for reductions

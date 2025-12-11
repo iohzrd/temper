@@ -140,3 +140,8 @@ required-features = ["gpu"]
 name = "scale-test"
 path = "src/bin/scale-test.rs"
 required-features = ["gpu"]
+
+[[bin]]
+name = "gradient-benchmark"
+path = "src/bin/gradient-benchmark.rs"
+required-features = ["gpu"]

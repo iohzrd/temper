@@ -382,6 +382,21 @@ impl ThermodynamicSystem {
         temperature: f32,
         expr: crate::expr::Expr,
     ) -> Self {
+        Self::with_expr_options(particle_count, dim, temperature, expr, true)
+    }
+
+    /// Create with a custom expression and control gradient type
+    ///
+    /// # Arguments
+    /// * `analytical_gradients` - If true, use symbolic differentiation (faster).
+    ///   If false, use numerical finite differences (slower but always works).
+    pub fn with_expr_options(
+        particle_count: usize,
+        dim: usize,
+        temperature: f32,
+        expr: crate::expr::Expr,
+        analytical_gradients: bool,
+    ) -> Self {
         assert!(particle_count <= MAX_PARTICLES);
         assert!(dim <= MAX_DIM);
 
@@ -479,7 +494,7 @@ impl ThermodynamicSystem {
         });
 
         // Generate custom shader by replacing stub functions with real ones
-        let custom_wgsl = expr.to_wgsl();
+        let custom_wgsl = expr.to_wgsl_with_options(analytical_gradients);
         let base_shader = include_str!("shaders/thermodynamic.wgsl");
 
         // Find and replace the stub functions
