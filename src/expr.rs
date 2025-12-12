@@ -59,6 +59,8 @@ pub enum Expr {
     ProdDims(Arc<dyn Fn(Expr, Expr) -> Expr + Send + Sync>),
     /// Sum over adjacent pairs: sum_i f(x[i], x[i+1])
     SumPairs(Arc<dyn Fn(Expr, Expr) -> Expr + Send + Sync>),
+    /// Custom WGSL code (loss function body, gradient function body)
+    CustomWgsl(String, String),
 }
 
 impl std::fmt::Debug for Expr {
@@ -92,6 +94,7 @@ impl std::fmt::Debug for Expr {
             Expr::SumDims(_) => write!(f, "SumDims(<fn>)"),
             Expr::ProdDims(_) => write!(f, "ProdDims(<fn>)"),
             Expr::SumPairs(_) => write!(f, "SumPairs(<fn>)"),
+            Expr::CustomWgsl(_, _) => write!(f, "CustomWgsl(<code>)"),
         }
     }
 }
@@ -196,6 +199,15 @@ where
     F: Fn(Expr, Expr) -> Expr + Send + Sync + 'static,
 {
     Expr::SumPairs(Arc::new(f))
+}
+
+/// Custom WGSL loss function
+/// Takes two strings: the complete custom_loss function body and the complete custom_gradient function body.
+/// The strings should be valid WGSL code that defines:
+/// - `fn custom_loss(pos: array<f32, 64>, dim: u32) -> f32`
+/// - `fn custom_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32`
+pub fn custom_wgsl(loss_code: &str, gradient_code: &str) -> Expr {
+    Expr::CustomWgsl(loss_code.to_string(), gradient_code.to_string())
 }
 
 // ============================================================================
@@ -318,12 +330,17 @@ impl Expr {
     }
 
     /// Generate WGSL with option for analytical or numerical gradients
-    pub fn to_wgsl_with_options(&self, analytical: bool) -> String {
+    pub fn to_wgsl_with_options(&self, _analytical: bool) -> String {
+        // Special case: CustomWgsl emits raw WGSL code directly
+        if let Expr::CustomWgsl(loss_code, grad_code) = self {
+            return format!("{}\n\n{}", loss_code, grad_code);
+        }
+
         let mut counter = 0;
         let mut helpers = Vec::new();
         let body = self.to_wgsl_with_helpers("x", "i", &mut counter, &mut helpers);
 
-        let (all_helpers, grad_body) = if analytical {
+        let (all_helpers, grad_body) = if _analytical {
             // Generate analytical gradient helpers
             let mut grad_counter = 500;
             let mut grad_helpers = Vec::new();
@@ -337,7 +354,7 @@ impl Expr {
             )
         };
 
-        let numerical_helper = if !analytical {
+        let numerical_helper = if !_analytical {
             r#"
 
 fn numerical_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {
@@ -778,6 +795,9 @@ fn custom_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
 
                 format!("{fn_name}(pos, dim, d_idx)")
             }
+
+            // CustomWgsl is handled at the top level, should never reach here
+            Expr::CustomWgsl(_, _) => "0.0".to_string(),
         }
     }
 
@@ -968,6 +988,9 @@ fn custom_gradient(pos: array<f32, 64>, dim: u32, d_idx: u32) -> f32 {{
                 helpers.push(helper);
                 format!("{fn_name}(pos, dim)")
             }
+
+            // CustomWgsl is handled at the top level, should never reach here
+            Expr::CustomWgsl(_, _) => "0.0".to_string(),
         }
     }
 }
