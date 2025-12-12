@@ -13,6 +13,13 @@ use bytemuck::{Pod, Zeroable};
 use half::f16;
 use wgpu::util::DeviceExt;
 
+/// Get random seed from OS entropy via getrandom
+fn random_seed() -> u64 {
+    let mut buf = [0u8; 8];
+    getrandom::fill(&mut buf).expect("Failed to get OS entropy");
+    u64::from_le_bytes(buf)
+}
+
 /// Operating mode determined by temperature
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ThermodynamicMode {
@@ -182,6 +189,7 @@ pub struct ThermodynamicSystem {
     loss_fn: LossFunction,
     repulsion_samples: u32, // 0 = skip, 64 = sample 64 particles (default)
     use_f16_compute: bool,  // true = f16 arithmetic for position updates
+    base_seed: u32,         // Random seed from OS entropy (getrandom)
     // Entropy extraction
     entropy_pool: Vec<u32>,
     // Custom loss function WGSL code (if using LossFunction::Custom)
@@ -194,10 +202,11 @@ impl ThermodynamicSystem {
         assert!(particle_count <= MAX_PARTICLES);
         assert!(dim <= MAX_DIMENSIONS);
 
-        // Initialize particles randomly in [-4, 4]
+        // Initialize particles randomly in [-4, 4] using OS entropy
         let mut particles = vec![ThermodynamicParticle::default(); particle_count];
+        let base_seed = random_seed();
 
-        let mut seed = 42u64;
+        let mut seed = base_seed;
         for p in particles.iter_mut() {
             for d in 0..dim {
                 seed ^= seed << 13;
@@ -275,7 +284,7 @@ impl ThermodynamicSystem {
             repulsion_strength,
             kernel_bandwidth,
             dt,
-            seed: 12345,
+            seed: base_seed as u32,
             mode: ThermodynamicMode::from_temperature(temperature) as u32,
             loss_fn: LossFunction::default() as u32,
             repulsion_samples,
@@ -411,6 +420,7 @@ impl ThermodynamicSystem {
             loss_fn: LossFunction::default(),
             repulsion_samples,
             use_f16_compute: false,
+            base_seed: base_seed as u32,
             entropy_pool: Vec::new(),
             custom_loss_wgsl: None,
         }
@@ -455,10 +465,11 @@ impl ThermodynamicSystem {
         assert!(particle_count <= MAX_PARTICLES);
         assert!(dim <= MAX_DIMENSIONS);
 
-        // Initialize particles randomly in [-4, 4]
+        // Initialize particles randomly in [-4, 4] using OS entropy
         let mut particles = vec![ThermodynamicParticle::default(); particle_count];
+        let base_seed = random_seed();
 
-        let mut seed = 42u64;
+        let mut seed = base_seed;
         for p in particles.iter_mut() {
             for d in 0..dim {
                 seed ^= seed << 13;
@@ -532,7 +543,7 @@ impl ThermodynamicSystem {
             repulsion_strength,
             kernel_bandwidth,
             dt,
-            seed: 12345,
+            seed: base_seed as u32,
             mode: ThermodynamicMode::from_temperature(temperature) as u32,
             loss_fn: loss_fn as u32,
             repulsion_samples,
@@ -673,6 +684,7 @@ impl ThermodynamicSystem {
             loss_fn,
             repulsion_samples,
             use_f16_compute,
+            base_seed: base_seed as u32,
             entropy_pool: Vec::new(),
             custom_loss_wgsl: None,
         }
@@ -718,10 +730,11 @@ impl ThermodynamicSystem {
         assert!(particle_count <= MAX_PARTICLES);
         assert!(dim <= MAX_DIMENSIONS);
 
-        // Initialize particles randomly in [-4, 4]
+        // Initialize particles randomly in [-4, 4] using OS entropy
         let mut particles = vec![ThermodynamicParticle::default(); particle_count];
+        let base_seed = random_seed();
 
-        let mut seed = 42u64;
+        let mut seed = base_seed;
         for p in particles.iter_mut() {
             for d in 0..dim {
                 seed ^= seed << 13;
@@ -796,7 +809,7 @@ impl ThermodynamicSystem {
             repulsion_strength,
             kernel_bandwidth,
             dt,
-            seed: 12345,
+            seed: base_seed as u32,
             mode: ThermodynamicMode::from_temperature(temperature) as u32,
             loss_fn: LossFunction::Custom as u32,
             repulsion_samples,
@@ -953,6 +966,7 @@ impl ThermodynamicSystem {
             loss_fn: LossFunction::Custom,
             repulsion_samples,
             use_f16_compute: false,
+            base_seed: base_seed as u32,
             entropy_pool: Vec::new(),
             custom_loss_wgsl: Some(full_shader),
         }
@@ -1049,7 +1063,9 @@ impl ThermodynamicSystem {
             repulsion_strength: self.repulsion_strength,
             kernel_bandwidth: self.kernel_bandwidth,
             dt: self.dt,
-            seed: self.step * 1337,
+            seed: self
+                .base_seed
+                .wrapping_add(self.step.wrapping_mul(2654435769)), // Mix base entropy with step
             mode: self.mode() as u32,
             loss_fn: self.loss_fn as u32,
             repulsion_samples: self.repulsion_samples,
