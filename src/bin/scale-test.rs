@@ -84,7 +84,7 @@ fn main() {
     println!("TEST 2: DIMENSION SCALING (particles=1000, K=64)");
     println!("═══════════════════════════════════════════════════════════════════════════\n");
 
-    let dimensions = [2, 4, 8, 16, 32, 64]; // MAX_DIM is 64
+    let dimensions = [2, 4, 8, 16, 32, 64]; // MAX_DIMENSIONS is 64
     let n = 1000;
 
     println!(
@@ -316,5 +316,5 @@ fn main() {
     println!("\nBottlenecks at scale:");
     println!("  - GPU memory limits max particle count");
     println!("  - Repulsion computation dominates at high K");
-    println!("  - Dimension scaling limited by MAX_DIM=64 constant");
+    println!("  - Dimension scaling limited by MAX_DIMENSIONS=64 constant");
 }

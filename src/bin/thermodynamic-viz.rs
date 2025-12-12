@@ -274,11 +274,13 @@ impl canvas::Program<Message> for App {
             let max_energy = 5.0;
             for p in &self.particles {
                 // Skip particles with NaN positions
-                if p.pos[0].is_nan() || p.pos[1].is_nan() || p.energy.is_nan() {
+                let px = p.pos[0].to_f32();
+                let py = p.pos[1].to_f32();
+                if px.is_nan() || py.is_nan() || p.energy.is_nan() {
                     continue;
                 }
-                let x = ((p.pos[0] - DOMAIN_MIN) / DOMAIN_SIZE) * size.width;
-                let y = ((p.pos[1] - DOMAIN_MIN) / DOMAIN_SIZE) * size.height;
+                let x = ((px - DOMAIN_MIN) / DOMAIN_SIZE) * size.width;
+                let y = ((py - DOMAIN_MIN) / DOMAIN_SIZE) * size.height;
                 if x.is_nan() || y.is_nan() {
                     continue;
                 }

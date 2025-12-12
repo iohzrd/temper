@@ -129,7 +129,13 @@ fn train_xor() -> bool {
     println!("  Results:");
     println!("    Min loss (BCE): {:.6}", min_loss);
     println!("    Mean loss:      {:.6}", mean_loss);
-    println!("    Best weights:   {:?}", &best.pos[..DIM]);
+    println!(
+        "    Best weights:   {:?}",
+        best.pos[..DIM]
+            .iter()
+            .map(|x| x.to_f32())
+            .collect::<Vec<_>>()
+    );
 
     // Test predictions
     println!("  Predictions (best network):");
@@ -142,10 +148,11 @@ fn train_xor() -> bool {
 
     let mut correct = 0;
     for (name, x, y, target) in &predictions {
-        // Manual forward pass
-        let h0 = (best.pos[0] * x + best.pos[1] * y + best.pos[4]).tanh();
-        let h1 = (best.pos[2] * x + best.pos[3] * y + best.pos[5]).tanh();
-        let out = 1.0 / (1.0 + (-best.pos[6] * h0 - best.pos[7] * h1 - best.pos[8]).exp());
+        // Manual forward pass (convert f16 positions to f32)
+        let w = |i: usize| best.pos[i].to_f32();
+        let h0 = (w(0) * x + w(1) * y + w(4)).tanh();
+        let h1 = (w(2) * x + w(3) * y + w(5)).tanh();
+        let out = 1.0 / (1.0 + (-w(6) * h0 - w(7) * h1 - w(8)).exp());
         let pred_class: f32 = if out > 0.5 { 1.0 } else { 0.0 };
         let correct_str = if (pred_class - target).abs() < 0.01 {
             "✓"

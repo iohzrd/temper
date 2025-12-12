@@ -10,14 +10,30 @@
 // The key insight: These are NOT three different algorithms, but ONE algorithm
 // with a temperature parameter that controls the exploration/exploitation tradeoff.
 
-// MAX_DIM = 64 to support deeper neural networks
-// Struct size: 64*4 + 4 + 4 + 8 = 272 bytes (down from 528 with unused vel array)
+// Enable f16 support for reduced memory bandwidth (~50% memory reduction)
+enable f16;
+
+// MAX_DIMENSIONS = 64 to support deeper neural networks
+// Struct size: 64*2 + 4 + 4 = 136 bytes (down from 272 with f32 positions)
+// ~50% memory reduction = better cache utilization and bandwidth
 struct Particle {
-    pos: array<f32, 64>,     // Position in parameter space (NN weights)
-    energy: f32,             // Current loss/energy value
+    pos: array<f16, 64>,     // Position in parameter space (NN weights) - f16 for bandwidth
+    energy: f32,             // Current loss/energy value (f32 for precision)
     entropy_bits: u32,       // Accumulated entropy bits (for extraction)
-    _pad1: f32,              // Padding for alignment
-    _pad2: f32,
+}
+
+// Helper to read position as f32 for computation
+fn get_pos(p: Particle, d: u32) -> f32 {
+    return f32(p.pos[d]);
+}
+
+// Helper to get position array as f32 for loss functions
+fn get_pos_array(p: Particle, dim: u32) -> array<f32, 64> {
+    var result: array<f32, 64>;
+    for (var i = 0u; i < dim; i = i + 1u) {
+        result[i] = f32(p.pos[i]);
+    }
+    return result;
 }
 
 struct Uniforms {
@@ -521,7 +537,7 @@ fn compute_repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Skip repulsion entirely if repulsion_samples is 0 (pure optimization mode)
     if uniforms.repulsion_samples == 0u {
         for (var d = 0u; d < 64u; d = d + 1u) {
-            repulsion[idx].pos[d] = 0.0;
+            repulsion[idx].pos[d] = f16(0.0);
         }
         return;
     }
@@ -529,8 +545,10 @@ fn compute_repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var p_i = particles[idx];
     let h_sq = uniforms.kernel_bandwidth * uniforms.kernel_bandwidth;
 
+    // Accumulate repulsion in f32 for precision
+    var rep: array<f32, 64>;
     for (var d = 0u; d < 64u; d = d + 1u) {
-        repulsion[idx].pos[d] = 0.0;
+        rep[d] = 0.0;
     }
 
     // Determine how many particles to sample
@@ -553,22 +571,22 @@ fn compute_repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         var dist_sq = 0.0;
         for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-            let diff = p_i.pos[d] - p_j.pos[d];
+            let diff = f32(p_i.pos[d]) - f32(p_j.pos[d]);
             dist_sq = dist_sq + diff * diff;
         }
         let k = exp(-dist_sq / (2.0 * h_sq));
 
         // Kernel gradient pushes particles apart
         for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-            let diff = p_i.pos[d] - p_j.pos[d];
-            repulsion[idx].pos[d] = repulsion[idx].pos[d] - k * diff / h_sq;
+            let diff = f32(p_i.pos[d]) - f32(p_j.pos[d]);
+            rep[d] = rep[d] - k * diff / h_sq;
         }
     }
 
     // Scale by effective sample count (importance sampling correction)
     let effective_n = f32(sample_count);
     for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-        repulsion[idx].pos[d] = repulsion[idx].pos[d] * uniforms.repulsion_strength / effective_n;
+        repulsion[idx].pos[d] = f16(rep[d] * uniforms.repulsion_strength / effective_n);
     }
 }
 
@@ -582,6 +600,9 @@ fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     var p = particles[idx];
 
+    // Convert f16 positions to f32 for computation
+    var pos_f32 = get_pos_array(p, uniforms.dim);
+
     // Compute loss based on selected loss function
     // 0=neural_net_2d, 1=multimodal, 2=rosenbrock, 3=rastrigin, 4=ackley, 5=sphere
     var loss_grad_2d = vec2<f32>(0.0, 0.0);
@@ -589,52 +610,52 @@ fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
     switch uniforms.loss_fn {
         case 0u: {
             // Neural net 2D (original)
-            p.energy = nn_loss_2d(p.pos[0], p.pos[1]);
-            loss_grad_2d = nn_gradient_2d(p.pos[0], p.pos[1]);
+            p.energy = nn_loss_2d(pos_f32[0], pos_f32[1]);
+            loss_grad_2d = nn_gradient_2d(pos_f32[0], pos_f32[1]);
         }
         case 1u: {
             // Multimodal N-D
-            p.energy = multimodal_loss_nd(p.pos, uniforms.dim);
+            p.energy = multimodal_loss_nd(pos_f32, uniforms.dim);
         }
         case 2u: {
             // Rosenbrock
-            p.energy = rosenbrock_loss(p.pos, uniforms.dim);
+            p.energy = rosenbrock_loss(pos_f32, uniforms.dim);
         }
         case 3u: {
             // Rastrigin
-            p.energy = rastrigin_loss(p.pos, uniforms.dim);
+            p.energy = rastrigin_loss(pos_f32, uniforms.dim);
         }
         case 4u: {
             // Ackley
-            p.energy = ackley_loss(p.pos, uniforms.dim);
+            p.energy = ackley_loss(pos_f32, uniforms.dim);
         }
         case 5u: {
             // Sphere
-            p.energy = sphere_loss(p.pos, uniforms.dim);
+            p.energy = sphere_loss(pos_f32, uniforms.dim);
         }
         case 6u: {
             // MLP XOR (real neural network)
-            p.energy = mlp_xor_loss(p.pos);
+            p.energy = mlp_xor_loss(pos_f32);
         }
         case 7u: {
             // MLP Spiral classification
-            p.energy = mlp_spiral_loss(p.pos);
+            p.energy = mlp_spiral_loss(pos_f32);
         }
         case 8u: {
             // Deep MLP (3-layer) on circles
-            p.energy = mlp_deep_loss(p.pos);
+            p.energy = mlp_deep_loss(pos_f32);
         }
         case 9u: {
             // Schwefel - deceptive with far-off global minimum
-            p.energy = schwefel_loss(p.pos, uniforms.dim);
+            p.energy = schwefel_loss(pos_f32, uniforms.dim);
         }
         case 10u: {
             // Custom expression-based loss function (injected at shader compile time)
-            p.energy = custom_loss(p.pos, uniforms.dim);
+            p.energy = custom_loss(pos_f32, uniforms.dim);
         }
         default: {
-            p.energy = nn_loss_2d(p.pos[0], p.pos[1]);
-            loss_grad_2d = nn_gradient_2d(p.pos[0], p.pos[1]);
+            p.energy = nn_loss_2d(pos_f32[0], pos_f32[1]);
+            loss_grad_2d = nn_gradient_2d(pos_f32[0], pos_f32[1]);
         }
     }
 
@@ -674,43 +695,43 @@ fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
             case 1u: {
                 // Multimodal N-D
-                grad = multimodal_gradient_nd(p.pos, uniforms.dim, d);
+                grad = multimodal_gradient_nd(pos_f32, uniforms.dim, d);
             }
             case 2u: {
                 // Rosenbrock
-                grad = rosenbrock_gradient(p.pos, uniforms.dim, d);
+                grad = rosenbrock_gradient(pos_f32, uniforms.dim, d);
             }
             case 3u: {
                 // Rastrigin
-                grad = rastrigin_gradient(p.pos, uniforms.dim, d);
+                grad = rastrigin_gradient(pos_f32, uniforms.dim, d);
             }
             case 4u: {
                 // Ackley
-                grad = ackley_gradient(p.pos, uniforms.dim, d);
+                grad = ackley_gradient(pos_f32, uniforms.dim, d);
             }
             case 5u: {
                 // Sphere
-                grad = sphere_gradient(p.pos, uniforms.dim, d);
+                grad = sphere_gradient(pos_f32, uniforms.dim, d);
             }
             case 6u: {
                 // MLP XOR
-                grad = mlp_xor_gradient(p.pos, d);
+                grad = mlp_xor_gradient(pos_f32, d);
             }
             case 7u: {
                 // MLP Spiral
-                grad = mlp_spiral_gradient(p.pos, d);
+                grad = mlp_spiral_gradient(pos_f32, d);
             }
             case 8u: {
                 // Deep MLP
-                grad = mlp_deep_gradient(p.pos, d);
+                grad = mlp_deep_gradient(pos_f32, d);
             }
             case 9u: {
                 // Schwefel
-                grad = schwefel_gradient(p.pos, uniforms.dim, d);
+                grad = schwefel_gradient(pos_f32, uniforms.dim, d);
             }
             case 10u: {
                 // Custom expression-based gradient
-                grad = custom_gradient(p.pos, uniforms.dim, d);
+                grad = custom_gradient(pos_f32, uniforms.dim, d);
             }
             default: {
                 if d == 0u {
@@ -724,29 +745,33 @@ fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Clip large gradients to prevent explosion (esp. for Rosenbrock)
         let grad_clipped = clamp(grad, -10.0, 10.0);
 
-        // The unified update
+        // The unified update (all arithmetic in f32)
         let grad_term = -uniforms.gamma * grad_clipped;
-        let repulsion_term = repulsion[idx].pos[d] * repulsion_scale;
+        let repulsion_term = f32(repulsion[idx].pos[d]) * repulsion_scale;
         let noise_term = noise_scale * noise;
 
-        p.pos[d] = p.pos[d] + (grad_term + repulsion_term) * uniforms.dt + noise_term;
+        // Update position in f32
+        pos_f32[d] = pos_f32[d] + (grad_term + repulsion_term) * uniforms.dt + noise_term;
 
         // Clamp based on loss function (Schwefel needs larger domain)
         if uniforms.loss_fn == 9u {
             // Schwefel: global minimum at ~420.97
-            p.pos[d] = clamp(p.pos[d], -500.0, 500.0);
+            pos_f32[d] = clamp(pos_f32[d], -500.0, 500.0);
         } else {
-            p.pos[d] = clamp(p.pos[d], -5.0, 5.0);
+            pos_f32[d] = clamp(pos_f32[d], -5.0, 5.0);
         }
+
+        // Write back as f16
+        p.pos[d] = f16(pos_f32[d]);
     }
 
     // ENTROPY EXTRACTION (at high temperature)
     // When T is high, particle positions are chaotic - extract bits!
     if uniforms.temperature > 1.0 {
-        // Mix position bits into entropy accumulator
+        // Mix position bits into entropy accumulator (use f32 positions for bit extraction)
         var entropy = p.entropy_bits;
         for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-            let pos_bits = bitcast<u32>(p.pos[d] * 1e6);
+            let pos_bits = bitcast<u32>(pos_f32[d] * 1e6);
             entropy = entropy ^ hash(pos_bits + idx * 1000u + d);
         }
         p.entropy_bits = entropy;

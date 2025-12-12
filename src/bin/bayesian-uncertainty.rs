@@ -117,7 +117,7 @@ fn main() {
         for p in sorted.iter().take(10) {
             let mut weights = [0.0f32; DIM];
             for d in 0..DIM {
-                weights[d] = p.pos[d];
+                weights[d] = p.pos[d].to_f32();
             }
             weight_samples.push(weights);
         }

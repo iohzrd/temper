@@ -157,12 +157,7 @@ impl ParallelTempering {
             }
         }
 
-        best.unwrap_or_else(|| ThermodynamicParticle {
-            pos: [0.0; 64],
-            energy: f32::MAX,
-            entropy_bits: 0,
-            _pad: [0.0; 2],
-        })
+        best.unwrap_or_else(|| ThermodynamicParticle::default())
     }
 
     /// Get statistics about the system

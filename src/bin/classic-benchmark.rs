@@ -218,7 +218,7 @@ fn run_benchmark(
     // Compute distance to optimum
     let mut dist_sq = 0.0;
     for d in 0..dim {
-        let diff = best.pos[d] - optimum[d];
+        let diff = best.pos[d].to_f32() - optimum[d];
         dist_sq += diff * diff;
     }
     let dist_to_opt = dist_sq.sqrt();
@@ -227,7 +227,13 @@ fn run_benchmark(
     println!("  Results:");
     println!("    Min loss:        {:.6}", min_loss);
     println!("    Mean loss:       {:.6}", mean_loss);
-    println!("    Best position:   {:?}", &best.pos[..dim]);
+    println!(
+        "    Best position:   {:?}",
+        best.pos[..dim]
+            .iter()
+            .map(|x| x.to_f32())
+            .collect::<Vec<_>>()
+    );
     println!("    Dist to optimum: {:.4}", dist_to_opt);
     println!(
         "    Converged (<{}): {:.1}%",

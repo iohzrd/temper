@@ -155,27 +155,23 @@ fn train_deep_mlp() -> bool {
         let x = r * theta.cos();
         let y = r * theta.sin();
 
-        // Manual forward pass through 3-layer network
-        let pos = &best.pos;
+        // Manual forward pass through 3-layer network (convert f16 to f32)
+        let w = |i: usize| best.pos[i].to_f32();
 
         // Layer 1: input (2) -> hidden1 (4)
-        let h1_0 = (pos[0] * x + pos[1] * y + pos[8]).tanh();
-        let h1_1 = (pos[2] * x + pos[3] * y + pos[9]).tanh();
-        let h1_2 = (pos[4] * x + pos[5] * y + pos[10]).tanh();
-        let h1_3 = (pos[6] * x + pos[7] * y + pos[11]).tanh();
+        let h1_0 = (w(0) * x + w(1) * y + w(8)).tanh();
+        let h1_1 = (w(2) * x + w(3) * y + w(9)).tanh();
+        let h1_2 = (w(4) * x + w(5) * y + w(10)).tanh();
+        let h1_3 = (w(6) * x + w(7) * y + w(11)).tanh();
 
         // Layer 2: hidden1 (4) -> hidden2 (4)
-        let h2_0 =
-            (pos[12] * h1_0 + pos[13] * h1_1 + pos[14] * h1_2 + pos[15] * h1_3 + pos[28]).tanh();
-        let h2_1 =
-            (pos[16] * h1_0 + pos[17] * h1_1 + pos[18] * h1_2 + pos[19] * h1_3 + pos[29]).tanh();
-        let h2_2 =
-            (pos[20] * h1_0 + pos[21] * h1_1 + pos[22] * h1_2 + pos[23] * h1_3 + pos[30]).tanh();
-        let h2_3 =
-            (pos[24] * h1_0 + pos[25] * h1_1 + pos[26] * h1_2 + pos[27] * h1_3 + pos[31]).tanh();
+        let h2_0 = (w(12) * h1_0 + w(13) * h1_1 + w(14) * h1_2 + w(15) * h1_3 + w(28)).tanh();
+        let h2_1 = (w(16) * h1_0 + w(17) * h1_1 + w(18) * h1_2 + w(19) * h1_3 + w(29)).tanh();
+        let h2_2 = (w(20) * h1_0 + w(21) * h1_1 + w(22) * h1_2 + w(23) * h1_3 + w(30)).tanh();
+        let h2_3 = (w(24) * h1_0 + w(25) * h1_1 + w(26) * h1_2 + w(27) * h1_3 + w(31)).tanh();
 
         // Layer 3: hidden2 (4) -> output (1)
-        let logit = pos[32] * h2_0 + pos[33] * h2_1 + pos[34] * h2_2 + pos[35] * h2_3 + pos[36];
+        let logit = w(32) * h2_0 + w(33) * h2_1 + w(34) * h2_2 + w(35) * h2_3 + w(36);
         let out = 1.0 / (1.0 + (-logit).exp());
 
         let pred_class: f32 = if out > 0.5 { 1.0 } else { 0.0 };

@@ -144,9 +144,9 @@ fn find_modes(particles: &[temper::ThermodynamicParticle], dim: usize) -> Vec<((
     {
         // Round to grid
         let key = (
-            (p.pos[0] / threshold).round() as i32,
+            (p.pos[0].to_f32() / threshold).round() as i32,
             if dim > 1 {
-                (p.pos[1] / threshold).round() as i32
+                (p.pos[1].to_f32() / threshold).round() as i32
             } else {
                 0
             },
@@ -181,11 +181,11 @@ fn find_modes_4d(particles: &[temper::ThermodynamicParticle]) -> usize {
     {
         // Check which corner this is near
         let signs: Vec<i32> = (0..4)
-            .map(|i| if p.pos[i] > 0.0 { 1 } else { -1 })
+            .map(|i| if p.pos[i].to_f32() > 0.0 { 1 } else { -1 })
             .collect();
 
         // Check if actually near a corner
-        let near_corner = (0..4).all(|i| (p.pos[i].abs() - 1.0).abs() < threshold);
+        let near_corner = (0..4).all(|i| (p.pos[i].to_f32().abs() - 1.0).abs() < threshold);
 
         if near_corner {
             found.insert((signs[0], signs[1], signs[2], signs[3]));

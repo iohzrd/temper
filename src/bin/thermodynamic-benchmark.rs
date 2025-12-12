@@ -138,11 +138,13 @@ fn test_optimize_mode() -> OptimizeResult {
     let mut near_opt1 = 0;
     let mut near_opt2 = 0;
     for p in &particles {
-        if p.pos[0].is_nan() {
+        let x = p.pos[0].to_f32();
+        let y = p.pos[1].to_f32();
+        if x.is_nan() {
             continue;
         }
-        let d1 = ((p.pos[0] - OPTIMA[0].0).powi(2) + (p.pos[1] - OPTIMA[0].1).powi(2)).sqrt();
-        let d2 = ((p.pos[0] - OPTIMA[1].0).powi(2) + (p.pos[1] - OPTIMA[1].1).powi(2)).sqrt();
+        let d1 = ((x - OPTIMA[0].0).powi(2) + (y - OPTIMA[0].1).powi(2)).sqrt();
+        let d2 = ((x - OPTIMA[1].0).powi(2) + (y - OPTIMA[1].1).powi(2)).sqrt();
         if d1 < OPTIMUM_TOLERANCE {
             near_opt1 += 1;
         }
@@ -206,12 +208,14 @@ fn test_sample_mode() -> SampleResult {
     let mut positions: Vec<(f32, f32)> = Vec::new();
 
     for p in &particles {
-        if p.pos[0].is_nan() {
+        let x = p.pos[0].to_f32();
+        let y = p.pos[1].to_f32();
+        if x.is_nan() {
             continue;
         }
-        positions.push((p.pos[0], p.pos[1]));
-        let d1 = ((p.pos[0] - OPTIMA[0].0).powi(2) + (p.pos[1] - OPTIMA[0].1).powi(2)).sqrt();
-        let d2 = ((p.pos[0] - OPTIMA[1].0).powi(2) + (p.pos[1] - OPTIMA[1].1).powi(2)).sqrt();
+        positions.push((x, y));
+        let d1 = ((x - OPTIMA[0].0).powi(2) + (y - OPTIMA[0].1).powi(2)).sqrt();
+        let d2 = ((x - OPTIMA[1].0).powi(2) + (y - OPTIMA[1].1).powi(2)).sqrt();
         if d1 < OPTIMUM_TOLERANCE * 2.0 {
             near_opt1 += 1;
         }

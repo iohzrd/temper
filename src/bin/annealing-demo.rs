@@ -173,11 +173,13 @@ impl App {
         let mut count2 = 0;
 
         for p in &self.particles {
-            if p.pos[0].is_nan() {
+            let px = p.pos[0].to_f32();
+            let py = p.pos[1].to_f32();
+            if px.is_nan() {
                 continue;
             }
-            let d1 = ((p.pos[0] - opt1.0).powi(2) + (p.pos[1] - opt1.1).powi(2)).sqrt();
-            let d2 = ((p.pos[0] - opt2.0).powi(2) + (p.pos[1] - opt2.1).powi(2)).sqrt();
+            let d1 = ((px - opt1.0).powi(2) + (py - opt1.1).powi(2)).sqrt();
+            let d2 = ((px - opt2.0).powi(2) + (py - opt2.1).powi(2)).sqrt();
             if d1 < tolerance {
                 count1 += 1;
             }
@@ -374,11 +376,13 @@ impl canvas::Program<Message> for App {
             // Draw particles
             let max_energy = 5.0;
             for p in &self.particles {
-                if p.pos[0].is_nan() || p.pos[1].is_nan() || p.energy.is_nan() {
+                let px = p.pos[0].to_f32();
+                let py = p.pos[1].to_f32();
+                if px.is_nan() || py.is_nan() || p.energy.is_nan() {
                     continue;
                 }
-                let x = ((p.pos[0] - DOMAIN_MIN) / DOMAIN_SIZE) * size.width;
-                let y = ((p.pos[1] - DOMAIN_MIN) / DOMAIN_SIZE) * size.height;
+                let x = ((px - DOMAIN_MIN) / DOMAIN_SIZE) * size.width;
+                let y = ((py - DOMAIN_MIN) / DOMAIN_SIZE) * size.height;
                 if x.is_nan() || y.is_nan() {
                     continue;
                 }

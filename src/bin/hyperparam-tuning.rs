@@ -67,15 +67,15 @@ fn simulate_training(log_lr: f32, l2_reg: f32, dropout: f32, log_hidden: f32) ->
 }
 
 // Map position to hyperparameters
-fn pos_to_hyperparams(pos: &[f32]) -> (f32, f32, f32, f32) {
+fn pos_to_hyperparams(pos: &[temper::f16]) -> (f32, f32, f32, f32) {
     // pos[0]: log_lr in [-5, 0]
-    let log_lr = pos[0].clamp(-5.0, 0.0);
+    let log_lr = pos[0].to_f32().clamp(-5.0, 0.0);
     // pos[1]: l2_reg in [0, 0.1]
-    let l2_reg = (pos[1].clamp(-3.0, 3.0) + 3.0) / 60.0; // Map [-3,3] to [0, 0.1]
+    let l2_reg = (pos[1].to_f32().clamp(-3.0, 3.0) + 3.0) / 60.0; // Map [-3,3] to [0, 0.1]
     // pos[2]: dropout in [0, 0.8]
-    let dropout = (pos[2].clamp(-2.0, 2.0) + 2.0) / 5.0; // Map [-2,2] to [0, 0.8]
+    let dropout = (pos[2].to_f32().clamp(-2.0, 2.0) + 2.0) / 5.0; // Map [-2,2] to [0, 0.8]
     // pos[3]: log_hidden in [1, 3] (10 to 1000)
-    let log_hidden = pos[3].clamp(1.0, 3.0);
+    let log_hidden = pos[3].to_f32().clamp(1.0, 3.0);
 
     (log_lr, l2_reg, dropout, log_hidden)
 }

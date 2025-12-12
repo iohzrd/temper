@@ -10,6 +10,7 @@
 //! This is the core thesis: thermodynamic computation as a unifying framework.
 
 use bytemuck::{Pod, Zeroable};
+use half::f16;
 use wgpu::util::DeviceExt;
 
 /// Operating mode determined by temperature
@@ -58,18 +59,32 @@ impl ThermodynamicMode {
     }
 }
 
-const MAX_DIM: usize = 64;
+const MAX_DIMENSIONS: usize = 64;
 const MAX_PARTICLES: usize = 500_000; // Support up to 500k particles (GPU memory dependent)
 
 /// Particle state in the thermodynamic system
-/// Size: 64*4 + 4 + 4 + 8 = 272 bytes (optimized from 528 by removing unused velocity)
+///
+/// Uses f16 for positions to match GPU memory layout directly.
+/// Size: 64*2 + 4 + 4 = 136 bytes (reduced from 272 bytes with f32)
+/// ~50% memory reduction = better cache utilization and bandwidth
+///
+/// To convert positions to f32 for computation: `p.pos[d].to_f32()`
 #[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ThermodynamicParticle {
-    pub pos: [f32; MAX_DIM],
-    pub energy: f32,
-    pub entropy_bits: u32,
-    pub _pad: [f32; 2],
+    pub pos: [f16; MAX_DIMENSIONS], // 128 bytes
+    pub energy: f32,                // 4 bytes
+    pub entropy_bits: u32,          // 4 bytes
+}
+
+impl Default for ThermodynamicParticle {
+    fn default() -> Self {
+        Self {
+            pos: [f16::ZERO; MAX_DIMENSIONS],
+            energy: 0.0,
+            entropy_bits: 0,
+        }
+    }
 }
 
 #[repr(C)]
@@ -122,18 +137,10 @@ pub struct ThermodynamicSystem {
 impl ThermodynamicSystem {
     pub fn new(particle_count: usize, dim: usize, temperature: f32) -> Self {
         assert!(particle_count <= MAX_PARTICLES);
-        assert!(dim <= MAX_DIM);
+        assert!(dim <= MAX_DIMENSIONS);
 
         // Initialize particles randomly in [-4, 4]
-        let mut particles = vec![
-            ThermodynamicParticle {
-                pos: [0.0; MAX_DIM],
-                energy: 0.0,
-                entropy_bits: 0,
-                _pad: [0.0; 2],
-            };
-            particle_count
-        ];
+        let mut particles = vec![ThermodynamicParticle::default(); particle_count];
 
         let mut seed = 42u64;
         for p in particles.iter_mut() {
@@ -141,7 +148,8 @@ impl ThermodynamicSystem {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;
-                p.pos[d] = -4.0 + (seed & 0xFFFF) as f32 / 65535.0 * 8.0;
+                let val = -4.0 + (seed & 0xFFFF) as f32 / 65535.0 * 8.0;
+                p.pos[d] = f16::from_f32(val);
             }
         }
 
@@ -156,9 +164,12 @@ impl ThermodynamicSystem {
         }))
         .expect("No GPU adapter found");
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("Failed to create device");
+        // Request f16 shader support for memory bandwidth optimization
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::SHADER_F16,
+            ..Default::default()
+        }))
+        .expect("Failed to create device with f16 support");
 
         let particle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("particles"),
@@ -397,18 +408,10 @@ impl ThermodynamicSystem {
         analytical_gradients: bool,
     ) -> Self {
         assert!(particle_count <= MAX_PARTICLES);
-        assert!(dim <= MAX_DIM);
+        assert!(dim <= MAX_DIMENSIONS);
 
         // Initialize particles randomly in [-4, 4]
-        let mut particles = vec![
-            ThermodynamicParticle {
-                pos: [0.0; MAX_DIM],
-                energy: 0.0,
-                entropy_bits: 0,
-                _pad: [0.0; 2],
-            };
-            particle_count
-        ];
+        let mut particles = vec![ThermodynamicParticle::default(); particle_count];
 
         let mut seed = 42u64;
         for p in particles.iter_mut() {
@@ -416,7 +419,8 @@ impl ThermodynamicSystem {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;
-                p.pos[d] = -4.0 + (seed & 0xFFFF) as f32 / 65535.0 * 8.0;
+                let val = -4.0 + (seed & 0xFFFF) as f32 / 65535.0 * 8.0;
+                p.pos[d] = f16::from_f32(val);
             }
         }
 
@@ -431,9 +435,12 @@ impl ThermodynamicSystem {
         }))
         .expect("No GPU adapter found");
 
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("Failed to create device");
+        // Request f16 shader support for memory bandwidth optimization
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::SHADER_F16,
+            ..Default::default()
+        }))
+        .expect("Failed to create device with f16 support");
 
         let particle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("particles"),
@@ -854,8 +861,8 @@ impl ThermodynamicSystem {
         let mut count = 0;
         for i in 0..particles.len().min(100) {
             for j in (i + 1)..particles.len().min(100) {
-                let dx = particles[i].pos[0] - particles[j].pos[0];
-                let dy = particles[i].pos[1] - particles[j].pos[1];
+                let dx = particles[i].pos[0].to_f32() - particles[j].pos[0].to_f32();
+                let dy = particles[i].pos[1].to_f32() - particles[j].pos[1].to_f32();
                 spread += (dx * dx + dy * dy).sqrt();
                 count += 1;
             }

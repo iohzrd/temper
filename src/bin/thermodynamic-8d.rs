@@ -138,7 +138,7 @@ fn test_8d_sample() -> bool {
         let vals: Vec<f32> = particles
             .iter()
             .filter(|p| !p.pos[d].is_nan())
-            .map(|p| p.pos[d])
+            .map(|p| p.pos[d].to_f32())
             .collect();
         if vals.is_empty() {
             continue;
@@ -160,8 +160,8 @@ fn test_8d_sample() -> bool {
         for pair in 0..4 {
             let d = pair * 2;
             let scale = 1.0 / (1.0 + d as f32 * 0.1);
-            let x = p.pos[d];
-            let y = p.pos[d + 1];
+            let x = p.pos[d].to_f32();
+            let y = p.pos[d + 1].to_f32();
             // Check if closer to positive or negative mode
             let pos_dist = (x - 1.5 * scale).abs() + (y - 2.0 * scale).abs();
             let neg_dist = (x + 1.5 * scale).abs() + (y + 2.0 * scale).abs();

@@ -13,6 +13,7 @@ viz = ["iced"]
 [dependencies]
 rand_core = "0.9"
 getrandom = "0.3"
+half = { version = "2.4", features = ["bytemuck"] }
 
 # GPU acceleration (optional)
 wgpu = { version = "27", optional = true }

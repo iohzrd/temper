@@ -116,8 +116,8 @@ fn sample_at_temperature(temperature: f32) {
             let particles = system.read_particles();
             for p in &particles {
                 if !p.energy.is_nan() {
-                    samples_x.push(p.pos[0]);
-                    samples_y.push(p.pos[1]);
+                    samples_x.push(p.pos[0].to_f32());
+                    samples_y.push(p.pos[1].to_f32());
                     energies.push(p.energy);
                 }
             }

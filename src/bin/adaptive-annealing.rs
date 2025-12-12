@@ -292,7 +292,7 @@ impl RunState {
                 count += 1;
                 if p.energy < self.min_energy {
                     self.min_energy = p.energy;
-                    self.best_pos = [p.pos[0], p.pos[1]];
+                    self.best_pos = [p.pos[0].to_f32(), p.pos[1].to_f32()];
                 }
             }
         }
@@ -589,11 +589,13 @@ fn draw_panel(
 
     // Particles
     for p in particles {
-        if p.pos[0].is_nan() || p.pos[1].is_nan() {
+        let px = p.pos[0].to_f32();
+        let py = p.pos[1].to_f32();
+        if px.is_nan() || py.is_nan() {
             continue;
         }
-        let x = ((p.pos[0] - domain_min) / domain_size) * size.width;
-        let y = ((p.pos[1] - domain_min) / domain_size) * size.height;
+        let x = ((px - domain_min) / domain_size) * size.width;
+        let y = ((py - domain_min) / domain_size) * size.height;
 
         let t = (p.energy / (max_loss * 0.5)).clamp(0.0, 1.0);
         let color = if is_adaptive {

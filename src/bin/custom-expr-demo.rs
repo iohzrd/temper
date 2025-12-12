@@ -104,12 +104,12 @@ fn main() {
         if i > 0 {
             print!(", ");
         }
-        print!("{:.4}", best.pos[i]);
+        print!("{:.4}", best.pos[i].to_f32());
     }
     println!("]");
 
     let distance_from_origin: f32 = (0..dim)
-        .map(|i| best.pos[i] * best.pos[i])
+        .map(|i| best.pos[i].to_f32().powi(2))
         .sum::<f32>()
         .sqrt();
     println!("Distance from origin: {:.6}", distance_from_origin);
@@ -151,12 +151,12 @@ fn main() {
         if i > 0 {
             print!(", ");
         }
-        print!("{:.4}", best2.pos[i]);
+        print!("{:.4}", best2.pos[i].to_f32());
     }
     println!("]");
 
     let distance_from_ones: f32 = (0..dim)
-        .map(|i| (best2.pos[i] - 1.0).powi(2))
+        .map(|i| (best2.pos[i].to_f32() - 1.0).powi(2))
         .sum::<f32>()
         .sqrt();
     println!("Distance from (1,1,1,1): {:.6}", distance_from_ones);
