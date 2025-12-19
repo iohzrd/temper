@@ -54,7 +54,6 @@ fn main() {
 
     let n_particles = 500;
     let mut system = ThermodynamicSystem::with_expr(n_particles, 2, 10.0, gaussian_mixture.clone());
-    system.set_repulsion_samples(64); // SVGD for diversity
 
     println!("Diffusion     Temper          Particle Distribution");
     println!("Timestep      Temperature     (showing 'denoising' progress)");
@@ -116,7 +115,6 @@ fn main() {
     let hypercube = sum_dims(|x, _| (x.powi(2) - const_(1.0)).powi(2));
 
     let mut hd_system = ThermodynamicSystem::with_expr(1000, 8, 5.0, hypercube);
-    hd_system.set_repulsion_samples(64);
 
     println!("Diffusion     Temper          Entropy       Modes");
     println!("Progress      Temperature     (bits/dim)    Found");

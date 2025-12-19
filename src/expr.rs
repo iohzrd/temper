@@ -204,8 +204,8 @@ where
 /// Custom WGSL loss function
 /// Takes two strings: the complete custom_loss function body and the complete custom_gradient function body.
 /// The strings should be valid WGSL code that defines:
-/// - `fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32`
-/// - `fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32`
+/// - `fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32`
+/// - `fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32`
 pub fn custom_wgsl(loss_code: &str, gradient_code: &str) -> Expr {
     Expr::CustomWgsl(loss_code.to_string(), gradient_code.to_string())
 }
@@ -357,7 +357,7 @@ impl Expr {
         let numerical_helper = if !_analytical {
             r#"
 
-fn numerical_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn numerical_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let eps = 0.001;
     var pos_plus = pos;
     var pos_minus = pos;
@@ -372,11 +372,11 @@ fn numerical_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
         format!(
             r#"{all_helpers}
 
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {{
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {{
     return {body};
 }}
 
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{
     return {grad_body};
 }}{numerical_helper}"#
         )
@@ -413,7 +413,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return sign({inner}) * {de}; }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return sign({inner}) * {de}; }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -430,7 +430,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return cos({inner}) * {de}; }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return cos({inner}) * {de}; }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -447,7 +447,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return -sin({inner}) * {de}; }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return -sin({inner}) * {de}; }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -464,7 +464,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ let c = cos({inner}); return {de} / (c * c); }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ let c = cos({inner}); return {de} / (c * c); }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -481,7 +481,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return exp({inner}) * {de}; }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return exp({inner}) * {de}; }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -498,7 +498,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return {de} / {inner}; }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return {de} / {inner}; }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -515,7 +515,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return {de} / (2.0 * sqrt({inner})); }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return {de} / (2.0 * sqrt({inner})); }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -532,7 +532,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     let inner =
                         e.to_wgsl_with_helpers("pos[d_idx]", "d_idx", &mut 0, &mut Vec::new());
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ let t = tanh({inner}); return (1.0 - t * t) * {de}; }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ let t = tanh({inner}); return (1.0 - t * t) * {de}; }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -579,7 +579,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                         *counter += 1;
                         let fn_name = format!("mul_grad_{}", counter);
                         helpers.push(format!(
-                            "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return {fa} * {db} + {fb} * {da}; }}"
+                            "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return {fa} * {db} + {fb} * {da}; }}"
                         ));
                         format!("{fn_name}(pos, dim, d_idx)")
                     }
@@ -598,7 +598,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                         *counter += 1;
                         let fn_name = format!("div_grad_{}", counter);
                         helpers.push(format!(
-                            "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return -{fa} * {db} / ({fb} * {fb}); }}"
+                            "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return -{fa} * {db} / ({fb} * {fb}); }}"
                         ));
                         format!("{fn_name}(pos, dim, d_idx)")
                     }
@@ -607,7 +607,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                         *counter += 1;
                         let fn_name = format!("div_grad_{}", counter);
                         helpers.push(format!(
-                            "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ let g = {fb}; return ({da} * g - {fa} * {db}) / (g * g); }}"
+                            "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ let g = {fb}; return ({da} * g - {fa} * {db}) / (g * g); }}"
                         ));
                         format!("{fn_name}(pos, dim, d_idx)")
                     }
@@ -630,7 +630,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                         *counter += 1;
                         let fn_name = format!("pow_grad_{}", counter);
                         helpers.push(format!(
-                            "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return {fexp} * pow({fbase}, {fexp} - 1.0) * {dbase}; }}"
+                            "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return {fexp} * pow({fbase}, {fexp} - 1.0) * {dbase}; }}"
                         ));
                         format!("{fn_name}(pos, dim, d_idx)")
                     }
@@ -639,7 +639,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                         *counter += 1;
                         let fn_name = format!("pow_grad_{}", counter);
                         helpers.push(format!(
-                            "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return pow({fbase}, {fexp}) * log({fbase}) * {dexp}; }}"
+                            "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return pow({fbase}, {fexp}) * log({fbase}) * {dexp}; }}"
                         ));
                         format!("{fn_name}(pos, dim, d_idx)")
                     }
@@ -648,7 +648,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                         *counter += 1;
                         let fn_name = format!("pow_grad_{}", counter);
                         helpers.push(format!(
-                            "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ let f = {fbase}; let g = {fexp}; let fg = pow(f, g); return fg * (g * {dbase} / f + log(f) * {dexp}); }}"
+                            "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ let f = {fbase}; let g = {fexp}; let fg = pow(f, g); return fg * (g * {dbase} / f + log(f) * {dexp}); }}"
                         ));
                         format!("{fn_name}(pos, dim, d_idx)")
                     }
@@ -667,7 +667,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     *counter += 1;
                     let fn_name = format!("min_grad_{}", counter);
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return select({db}, {da}, {fa} < {fb}); }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return select({db}, {da}, {fa} < {fb}); }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -684,7 +684,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     *counter += 1;
                     let fn_name = format!("max_grad_{}", counter);
                     helpers.push(format!(
-                        "fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{ return select({da}, {db}, {fa} < {fb}); }}"
+                        "fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{ return select({da}, {db}, {fa} < {fb}); }}"
                     ));
                     format!("{fn_name}(pos, dim, d_idx)")
                 }
@@ -705,7 +705,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                 let body_grad = body_expr.to_wgsl_gradient(&mut body_counter, helpers);
 
                 helpers.push(format!(
-                    r#"fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
+                    r#"fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{
     // Gradient of sum_i f(x[i], i) w.r.t. x[d_idx] is just df/dx at i=d_idx
     return {body_grad};
 }}"#
@@ -729,7 +729,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
 
                 // First, create a helper to compute the full product
                 helpers.push(format!(
-                    r#"fn {loss_fn}(pos: array<f32, 4096>, dim: u32) -> f32 {{
+                    r#"fn {loss_fn}(pos: array<f32, 256>, dim: u32) -> f32 {{
     var result = 1.0;
     for (var i = 0u; i < dim; i = i + 1u) {{
         let x = pos[i];
@@ -741,7 +741,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
 
                 // Then the gradient using d(prod)/dx[j] = prod * (df_j/f_j)
                 helpers.push(format!(
-                    r#"fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
+                    r#"fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{
     let prod = {loss_fn}(pos, dim);
     let x = pos[d_idx];
     let i = d_idx;
@@ -769,7 +769,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
 
                 // Create the loss function helper
                 helpers.push(format!(
-                    r#"fn {loss_fn}(pos: array<f32, 4096>, dim: u32) -> f32 {{
+                    r#"fn {loss_fn}(pos: array<f32, 256>, dim: u32) -> f32 {{
     var result = 0.0;
     for (var i = 0u; i < dim - 1u; i = i + 1u) {{
         let x = pos[i];
@@ -783,7 +783,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
 
                 // Numerical gradient for sum_pairs (df/dx requires knowing both x and y roles)
                 helpers.push(format!(
-                    r#"fn {fn_name}(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
+                    r#"fn {fn_name}(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {{
     let eps = 0.001;
     var pos_plus = pos;
     var pos_minus = pos;
@@ -924,7 +924,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     body_expr.to_wgsl_with_helpers(x_var, loop_var, &mut inner_counter, helpers);
 
                 let helper = format!(
-                    r#"fn {fn_name}(pos: array<f32, 4096>, dim: u32) -> f32 {{
+                    r#"fn {fn_name}(pos: array<f32, 256>, dim: u32) -> f32 {{
     var result = 0.0;
     for (var {loop_var} = 0u; {loop_var} < dim; {loop_var} = {loop_var} + 1u) {{
         let {x_var} = pos[{loop_var}];
@@ -949,7 +949,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     body_expr.to_wgsl_with_helpers(x_var, loop_var, &mut inner_counter, helpers);
 
                 let helper = format!(
-                    r#"fn {fn_name}(pos: array<f32, 4096>, dim: u32) -> f32 {{
+                    r#"fn {fn_name}(pos: array<f32, 256>, dim: u32) -> f32 {{
     var result = 1.0;
     for (var {loop_var} = 0u; {loop_var} < dim; {loop_var} = {loop_var} + 1u) {{
         let {x_var} = pos[{loop_var}];
@@ -975,7 +975,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {{
                     body_expr.to_wgsl_with_helpers(x_var, loop_var, &mut inner_counter, helpers);
 
                 let helper = format!(
-                    r#"fn {fn_name}(pos: array<f32, 4096>, dim: u32) -> f32 {{
+                    r#"fn {fn_name}(pos: array<f32, 256>, dim: u32) -> f32 {{
     var result = 0.0;
     for (var {loop_var} = 0u; {loop_var} < dim - 1u; {loop_var} = {loop_var} + 1u) {{
         let {x_var} = pos[{loop_var}];

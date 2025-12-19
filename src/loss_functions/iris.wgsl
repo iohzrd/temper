@@ -90,7 +90,7 @@ fn iris_label(idx: u32) -> u32 {
     return idx / 40u;
 }
 
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var total_loss = 0.0;
 
     for (var i = 0u; i < IRIS_SIZE; i = i + 1u) {

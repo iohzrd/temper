@@ -25,11 +25,6 @@ iced = { version = "0.14.0", features = ["canvas", "tokio"], optional = true }
 
 # Benchmarks
 [[bin]]
-name = "benchmark"
-path = "src/bin/benchmark.rs"
-required-features = ["gpu"]
-
-[[bin]]
 name = "thermodynamic-benchmark"
 path = "src/bin/thermodynamic-benchmark.rs"
 required-features = ["gpu"]
@@ -135,16 +130,6 @@ required-features = ["gpu"]
 [[bin]]
 name = "mode-discovery"
 path = "src/bin/mode-discovery.rs"
-required-features = ["gpu"]
-
-[[bin]]
-name = "scale-test"
-path = "src/bin/scale-test.rs"
-required-features = ["gpu"]
-
-[[bin]]
-name = "gradient-benchmark"
-path = "src/bin/gradient-benchmark.rs"
 required-features = ["gpu"]
 
 [[bin]]

@@ -20,12 +20,12 @@ use temper::expr::custom_wgsl;
 
 const IMG_SIZE: usize = 16;
 const IMG_DIM: usize = IMG_SIZE * IMG_SIZE;
-const PARTICLE_COUNT: usize = 100;
+const PARTICLE_COUNT: usize = 500; // More particles for better exploration
 
-// Annealing schedule
-const TOTAL_STEPS: u32 = 5000;
-const T_START: f32 = 1.0;
-const T_END: f32 = 0.001;
+// Optimization schedule - using leapfrog only (no accept/reject)
+const TOTAL_STEPS: u32 = 2000;
+const T_START: f32 = 0.001; // Very low T = near-zero momentum = gradient descent
+const T_END: f32 = 0.0001; // Stay low
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Pattern {
@@ -124,7 +124,13 @@ fn create_system(pattern: Pattern) -> ThermodynamicSystem {
         Pattern::Checkerboard => generate_checkerboard_wgsl(),
     };
     let mut system = ThermodynamicSystem::with_expr(PARTICLE_COUNT, IMG_DIM, T_START, expr);
-    system.set_repulsion_samples(16);
+
+    // Leapfrog parameters - slower for visible convergence
+    // Effective learning rate = ε²/(2m), so ε=0.05, m=1 → LR=0.00125
+    system.set_leapfrog_steps(1); // Single step per iteration
+    system.set_step_size(0.05); // Small step for visible convergence
+    system.set_mass(1.0); // Standard mass
+
     system
 }
 
@@ -161,7 +167,7 @@ fn update(app: &mut App, message: Message) {
 
                 app.temperature = app.compute_temperature();
                 app.system.set_temperature(app.temperature);
-                app.system.step();
+                app.system.step_leapfrog_only(); // Pure gradient descent, no accept/reject
                 app.step_count += 1;
             }
 
@@ -454,7 +460,7 @@ fn generate_checkerboard_pattern() -> Vec<f32> {
 
 fn generate_circle_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let size = 16.0;
     let center = size / 2.0;
     let radius = size / 3.0;
@@ -472,12 +478,12 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
         let diff = pos[i] - goal;
         mse = mse + diff * diff;
     }
-    return mse / 256.0;
+    return mse / 256.0;  // Normalize to average MSE
 }
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let size = 16.0;
     let center = size / 2.0;
     let radius = size / 3.0;
@@ -490,6 +496,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
     let dist = sqrt(dx * dx + dy * dy);
 
     let goal = clamp(1.0 - max(0.0, dist - radius) / 2.0, 0.0, 1.0);
+    // Gradient of MSE/256 = 2*(p-goal)/256, but scale up for faster learning
     return 2.0 * (pos[d_idx] - goal);
 }
 "#;
@@ -499,7 +506,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn generate_cross_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var mse = 0.0;
     for (var i = 0u; i < 256u; i = i + 1u) {
         let y = i / 16u;
@@ -520,7 +527,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let y = d_idx / 16u;
     let x = d_idx % 16u;
 
@@ -540,7 +547,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn generate_checkerboard_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var mse = 0.0;
     for (var i = 0u; i < 256u; i = i + 1u) {
         let y = i / 16u;
@@ -561,7 +568,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let y = d_idx / 16u;
     let x = d_idx % 16u;
 

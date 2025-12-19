@@ -28,7 +28,6 @@ fn main() {
     println!("-------------------------------------------------");
 
     let mut gd_system = ThermodynamicSystem::with_expr(100, 2, 0.001, four_wells.clone());
-    gd_system.set_repulsion_samples(0); // No SVGD - pure gradient descent
 
     // Run for convergence
     for _ in 0..2000 {
@@ -49,7 +48,6 @@ fn main() {
     println!("-----------------------------------------------------------");
 
     let mut thermo_system = ThermodynamicSystem::with_expr(100, 2, 2.0, four_wells.clone());
-    thermo_system.set_repulsion_samples(64); // SVGD for diversity
 
     // Anneal but stay at moderate temperature
     for step in 0..3000 {
@@ -73,7 +71,6 @@ fn main() {
     println!("-------------------------------------------------------");
 
     let mut hot_system = ThermodynamicSystem::with_expr(200, 2, 3.0, four_wells.clone());
-    hot_system.set_repulsion_samples(64);
 
     // Gentle annealing
     for step in 0..4000 {
@@ -101,7 +98,6 @@ fn main() {
     let hypercube_wells = sum_dims(|x, _| (x.powi(2) - const_(1.0)).powi(2));
 
     let mut hd_system = ThermodynamicSystem::with_expr(500, 4, 2.0, hypercube_wells);
-    hd_system.set_repulsion_samples(64);
 
     for step in 0..5000 {
         let progress = step as f32 / 5000.0;

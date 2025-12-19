@@ -56,7 +56,6 @@ impl Replica {
 
     fn step(&mut self) {
         self.system.set_temperature(self.temperature);
-        self.system.set_dt(0.005); // Stability for 2D
         self.system.step();
     }
 

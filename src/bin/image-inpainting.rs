@@ -48,7 +48,6 @@ fn main() {
 
 fn run_diffusion(name: &str, loss_expr: temper::expr::Expr, n_particles: usize) {
     let mut system = ThermodynamicSystem::with_expr(n_particles, RGB_DIM, 1.0, loss_expr);
-    system.set_repulsion_samples(8);
 
     println!("Target pattern: {}", name);
     println!(
@@ -116,7 +115,6 @@ fn run_inpainting(name: &str, n_particles: usize) {
     // Create inpainting loss: penalize changes to known pixels, allow unknown
     let loss_expr = generate_inpainting_wgsl();
     let mut system = ThermodynamicSystem::with_expr(n_particles, RGB_DIM, 1.0, loss_expr);
-    system.set_repulsion_samples(8);
 
     println!("Pattern: {} (inpainting center region)", name);
     println!(
@@ -336,7 +334,7 @@ fn hsv_to_b(h: f32) -> f32 {
     return 1.0 - f;
 }
 
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let size = 32u;
     var mse = 0.0;
     for (var i = 0u; i < 1024u; i = i + 1u) {
@@ -357,7 +355,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 3072u {
         return 0.0;
     }
@@ -387,7 +385,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 /// Inpainting loss: known pixels constrained, center region free with smoothness
 fn generate_inpainting_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let size = 32u;
     var loss = 0.0;
 
@@ -440,7 +438,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 3072u {
         return 0.0;
     }

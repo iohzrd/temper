@@ -34,7 +34,6 @@ fn main() {
     let dim = 4;
     let particle_count = 500;
     let mut system = ThermodynamicSystem::with_expr(particle_count, dim, 2.0, griewank);
-    system.set_repulsion_samples(64);
 
     println!(
         "Running optimization with {} particles in {}D...",
@@ -51,17 +50,6 @@ fn main() {
         let progress = step as f32 / steps as f32;
         let temp = t_start * (t_end / t_start).powf(progress);
         system.set_temperature(temp);
-
-        // Adaptive time step
-        let dt = if temp > 0.1 {
-            0.01
-        } else if temp > 0.01 {
-            0.005
-        } else {
-            0.002
-        };
-        system.set_dt(dt);
-
         system.step();
 
         // Report progress
@@ -121,20 +109,11 @@ fn main() {
 
     let levy_expr = levy();
     let mut system2 = ThermodynamicSystem::with_expr(particle_count, dim, 2.0, levy_expr);
-    system2.set_repulsion_samples(64);
 
     for step in 0..steps {
         let progress = step as f32 / steps as f32;
         let temp = t_start * (t_end / t_start).powf(progress);
         system2.set_temperature(temp);
-        let dt = if temp > 0.1 {
-            0.01
-        } else if temp > 0.01 {
-            0.005
-        } else {
-            0.002
-        };
-        system2.set_dt(dt);
         system2.step();
     }
 

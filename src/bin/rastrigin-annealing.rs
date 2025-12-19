@@ -68,7 +68,6 @@ impl App {
             T_START,
             LossFunction::Rastrigin,
         );
-        system.set_repulsion_samples(32); // Some repulsion for diversity
         let particles = system.read_particles();
 
         Self {
@@ -95,7 +94,6 @@ impl App {
             T_START,
             LossFunction::Rastrigin,
         );
-        self.system.set_repulsion_samples(32);
         self.particles = self.system.read_particles();
         self.step_count = 0;
         self.temperature = T_START;
@@ -139,29 +137,6 @@ fn update(app: &mut App, message: Message) {
                 // Update temperature
                 app.temperature = app.compute_temperature();
                 app.system.set_temperature(app.temperature);
-
-                // Reduce repulsion as we cool down
-                let repulsion = if app.temperature > 1.0 {
-                    32
-                } else if app.temperature > 0.1 {
-                    16
-                } else {
-                    0
-                };
-                app.system.set_repulsion_samples(repulsion);
-
-                // Use smaller dt at low temperatures to prevent overshooting
-                // Rastrigin has sharp gradients from cosine terms
-                let dt = if app.temperature > 0.1 {
-                    0.01
-                } else if app.temperature > 0.01 {
-                    0.005
-                } else {
-                    0.002
-                };
-                app.system.set_dt(dt);
-
-                // Run simulation step
                 app.system.step();
                 app.step_count += 1;
             }

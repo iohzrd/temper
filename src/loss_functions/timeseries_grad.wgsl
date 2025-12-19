@@ -1,5 +1,5 @@
 // Numerical gradient for Time series forecasting loss
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 41u {
         return 0.0;
     }

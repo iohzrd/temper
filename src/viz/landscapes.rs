@@ -120,7 +120,7 @@ impl Landscape {
 
 fn rastrigin_expr() -> Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let a = 10.0;
     let pi = 3.14159265359;
     var sum = a * 2.0;
@@ -137,7 +137,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 2u { return 0.0; }
     let a = 10.0;
     let pi = 3.14159265359;
@@ -155,7 +155,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn double_well_expr() -> Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let x = pos[0];
     let y = pos[1];
     let r1 = sqrt((x + 2.0) * (x + 2.0) + y * y);
@@ -170,7 +170,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 2u { return 0.0; }
     let x = pos[0];
     let y = pos[1];
@@ -197,7 +197,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn four_well_expr() -> Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let x = pos[0];
     let y = pos[1];
     let r1 = sqrt((x + 2.0) * (x + 2.0) + (y + 2.0) * (y + 2.0));
@@ -214,7 +214,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 2u { return 0.0; }
     let x = pos[0];
     let y = pos[1];
@@ -242,7 +242,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn rosenbrock_expr() -> Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let x = pos[0];
     let y = pos[1];
     let a = 1.0;
@@ -257,7 +257,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 2u { return 0.0; }
     let x = pos[0];
     let y = pos[1];
@@ -283,7 +283,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn himmelblau_expr() -> Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let x = pos[0];
     let y = pos[1];
     let a = x * x + y - 11.0;
@@ -297,7 +297,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 2u { return 0.0; }
     let x = pos[0];
     let y = pos[1];

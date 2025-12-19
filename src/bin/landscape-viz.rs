@@ -49,7 +49,10 @@ struct App {
 impl App {
     fn new() -> (Self, iced::Task<Message>) {
         let landscape = Landscape::Rastrigin;
-        let system = ThermodynamicSystem::with_expr(PARTICLE_COUNT, 2, T_START, landscape.expr());
+        let mut system =
+            ThermodynamicSystem::with_expr(PARTICLE_COUNT, 2, T_START, landscape.expr());
+        // Set bounds to match the visualization range [-5, 5]
+        system.set_position_bounds(X_MIN, X_MAX);
 
         (
             Self {
@@ -75,6 +78,8 @@ impl App {
     fn reset(&mut self) {
         self.system =
             ThermodynamicSystem::with_expr(PARTICLE_COUNT, 2, T_START, self.landscape.expr());
+        // Set bounds to match the visualization range [-5, 5]
+        self.system.set_position_bounds(X_MIN, X_MAX);
         self.step_count = 0;
         self.temperature = if self.annealing {
             T_START
@@ -109,8 +114,6 @@ fn update(app: &mut App, message: Message) {
                     }
 
                     app.system.set_temperature(app.temperature);
-                    // Override dt to prevent numerical instability in 2D
-                    app.system.set_dt(0.005);
                     app.system.step();
 
                     if app.annealing {

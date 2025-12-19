@@ -4,8 +4,9 @@ use bytemuck::{Pod, Zeroable};
 use half::f16;
 
 /// Maximum dimensions supported (for network weights, images, etc.)
-/// 4096 supports 32x32 RGB images (3072 dims) or 64x64 grayscale (4096 dims)
-pub const MAX_DIMENSIONS: usize = 4096;
+/// 256 supports most optimization benchmarks and small networks
+/// For larger dimensions (images), use specialized image shaders
+pub const MAX_DIMENSIONS: usize = 256;
 
 /// Maximum particles supported (GPU memory dependent)
 pub const MAX_PARTICLES: usize = 500_000;
@@ -76,18 +77,20 @@ pub enum LossFunction {
     StyblinskiTang = 13,
 }
 
-/// Particle state in the thermodynamic system
+/// Particle state in the thermodynamic system (AoS layout for CPU convenience)
 ///
-/// Uses f16 for positions to match GPU memory layout directly.
-/// Size: 4096*2 + 4 + 4 = 8200 bytes
-/// MAX_DIMENSIONS=4096 supports 32x32 RGB images or 64x64 grayscale
+/// Uses f16 for positions and velocities to match GPU memory layout directly.
+/// Size: 256*2*2 + 4*4 = 1040 bytes per particle
 ///
 /// To convert positions to f32 for computation: `p.pos[d].to_f32()`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ThermodynamicParticle {
-    pub pos: [f16; MAX_DIMENSIONS], // 2048 bytes
-    pub energy: f32,                // 4 bytes
+    pub pos: [f16; MAX_DIMENSIONS], // 256 bytes - position q
+    pub vel: [f16; MAX_DIMENSIONS], // 256 bytes - momentum/velocity p (for HMC)
+    pub energy: f32,                // 4 bytes - potential energy U(q)
+    pub kinetic_energy: f32,        // 4 bytes - kinetic energy K(p) = |p|²/2m
+    pub mass: f32,                  // 4 bytes - particle mass
     pub entropy_bits: u32,          // 4 bytes
 }
 
@@ -95,28 +98,43 @@ impl Default for ThermodynamicParticle {
     fn default() -> Self {
         Self {
             pos: [f16::ZERO; MAX_DIMENSIONS],
+            vel: [f16::ZERO; MAX_DIMENSIONS],
             energy: 0.0,
+            kinetic_energy: 0.0,
+            mass: 1.0,
             entropy_bits: 0,
         }
     }
 }
 
-/// GPU uniforms for the compute shader
+/// Per-particle scalar data for GPU SoA layout
+/// Matches the ParticleScalars struct in the shader
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, Default)]
+pub struct ParticleScalars {
+    pub energy: f32,
+    pub kinetic_energy: f32,
+    pub mass: f32,
+    pub entropy_bits: u32,
+}
+
+/// GPU uniforms for the compute shader (HMC parameters)
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct Uniforms {
     pub particle_count: u32,
     pub dim: u32,
-    pub gamma: f32,
     pub temperature: f32,
-    pub repulsion_strength: f32,
-    pub kernel_bandwidth: f32,
-    pub dt: f32,
     pub seed: u32,
     pub mode: u32,
     pub loss_fn: u32,
-    pub repulsion_samples: u32,
-    pub use_f16_compute: u32,
+    pub leapfrog_steps: u32, // L - number of leapfrog steps per HMC iteration
+    pub step_size: f32,      // ε - leapfrog integration step size
+    pub mass: f32,           // m - particle mass for kinetic energy
+    pub _padding: u32,       // Padding for 16-byte alignment
+    pub pos_min: f32,        // Position domain minimum (e.g., 0.0 for images, -5.0 for benchmarks)
+    pub pos_max: f32,        // Position domain maximum (e.g., 1.0 for images, 5.0 for benchmarks)
+    pub _padding2: [u32; 2], // Padding to maintain 16-byte alignment (48 bytes total)
 }
 
 /// Statistics about current particle distribution

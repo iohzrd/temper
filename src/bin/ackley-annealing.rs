@@ -67,7 +67,6 @@ impl App {
             T_START,
             LossFunction::Ackley,
         );
-        system.set_repulsion_samples(32);
         let particles = system.read_particles();
 
         Self {
@@ -93,7 +92,6 @@ impl App {
             T_START,
             LossFunction::Ackley,
         );
-        self.system.set_repulsion_samples(32);
         self.particles = self.system.read_particles();
         self.step_count = 0;
         self.temperature = T_START;
@@ -134,26 +132,6 @@ fn update(app: &mut App, message: Message) {
 
                 app.temperature = app.compute_temperature();
                 app.system.set_temperature(app.temperature);
-
-                let repulsion = if app.temperature > 1.0 {
-                    32
-                } else if app.temperature > 0.1 {
-                    16
-                } else {
-                    0
-                };
-                app.system.set_repulsion_samples(repulsion);
-
-                // Ackley is smoother than Rastrigin, can use slightly larger dt
-                let dt = if app.temperature > 0.1 {
-                    0.01
-                } else if app.temperature > 0.01 {
-                    0.008
-                } else {
-                    0.005
-                };
-                app.system.set_dt(dt);
-
                 app.system.step();
                 app.step_count += 1;
             }

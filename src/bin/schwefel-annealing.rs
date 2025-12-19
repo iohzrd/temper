@@ -64,7 +64,6 @@ impl App {
             T_START,
             LossFunction::Schwefel,
         );
-        system.set_repulsion_samples(128); // High repulsion to spread across domain
         let particles = system.read_particles();
 
         Self {
@@ -90,7 +89,6 @@ impl App {
             T_START,
             LossFunction::Schwefel,
         );
-        self.system.set_repulsion_samples(128); // High repulsion to spread across domain
         self.particles = self.system.read_particles();
         self.step_count = 0;
         self.temperature = T_START;
@@ -131,35 +129,6 @@ fn update(app: &mut App, message: Message) {
 
                 app.temperature = app.compute_temperature();
                 app.system.set_temperature(app.temperature);
-
-                // High repulsion throughout to spread across huge domain
-                let repulsion = if app.temperature > 50.0 {
-                    128
-                }
-                // Very high early
-                else if app.temperature > 10.0 {
-                    64
-                } else if app.temperature > 1.0 {
-                    32
-                } else {
-                    0
-                };
-                app.system.set_repulsion_samples(repulsion);
-
-                // Large dt to cover ground in the 1000x1000 domain
-                let dt = if app.temperature > 100.0 {
-                    1.0
-                }
-                // Fast exploration
-                else if app.temperature > 10.0 {
-                    0.5
-                } else if app.temperature > 1.0 {
-                    0.2
-                } else {
-                    0.1
-                };
-                app.system.set_dt(dt);
-
                 app.system.step();
                 app.step_count += 1;
             }

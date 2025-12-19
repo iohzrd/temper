@@ -27,7 +27,6 @@ fn run_fixed(dim: usize, t_start: f32, t_end: f32) -> TrialResult {
         t_start,
         LossFunction::Rastrigin,
     );
-    system.set_repulsion_samples(64);
 
     let threshold = 0.1 * dim as f32; // Scale threshold with dimension
     let mut steps_to_threshold = None;
@@ -37,16 +36,6 @@ fn run_fixed(dim: usize, t_start: f32, t_end: f32) -> TrialResult {
         let progress = step as f32 / STEPS as f32;
         let temp = t_start * (t_end / t_start).powf(progress);
         system.set_temperature(temp);
-
-        let dt = if temp > 0.1 {
-            0.01
-        } else if temp > 0.01 {
-            0.005
-        } else {
-            0.002
-        };
-        system.set_dt(dt);
-
         system.step();
 
         // Check energy
@@ -78,7 +67,6 @@ fn run_adaptive(dim: usize, t_start: f32, t_end: f32) -> TrialResult {
         t_start,
         LossFunction::Rastrigin,
     );
-    system.set_repulsion_samples(64);
 
     let threshold = 0.1 * dim as f32;
     let mut scheduler = AdaptiveScheduler::with_steps(t_start, t_end, threshold, dim, STEPS);
@@ -88,16 +76,6 @@ fn run_adaptive(dim: usize, t_start: f32, t_end: f32) -> TrialResult {
     for step in 0..STEPS {
         let temp = scheduler.update(min_energy);
         system.set_temperature(temp);
-
-        let dt = if temp > 0.1 {
-            0.01
-        } else if temp > 0.01 {
-            0.005
-        } else {
-            0.002
-        };
-        system.set_dt(dt);
-
         system.step();
 
         let particles = system.read_particles();

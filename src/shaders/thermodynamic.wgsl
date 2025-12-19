@@ -1,34 +1,86 @@
-// Unified Thermodynamic Particle System
+// Unified Thermodynamic Particle System - HMC Implementation
 //
-// This shader demonstrates that entropy generation, Bayesian sampling, and optimization
-// are all points on a temperature continuum:
+// Uses Hamiltonian Monte Carlo (HMC) with leapfrog integration.
+// Temperature controls behavior across three modes:
 //
-// T >> 1   : Entropy mode    - Particles explore chaotically, extract randomness
-// T ~ 0.1  : Sampling mode   - SVGD/Langevin samples from posterior distribution
-// T → 0    : Optimize mode   - Particles converge to loss minima
+// T >> 1   : Entropy mode    - Large momenta, chaotic exploration for randomness
+// T ~ 0.1  : Sampling mode   - Balanced exploration, efficient posterior sampling
+// T → 0    : Optimize mode   - Small momenta, momentum-based gradient descent
 //
 // The key insight: These are NOT three different algorithms, but ONE algorithm
 // with a temperature parameter that controls the exploration/exploitation tradeoff.
+//
+// MEMORY LAYOUT: Structure of Arrays (SoA) with dimension-major ordering
+// ========================================================================
+// Instead of Array of Structures (AoS): [particle0: all fields][particle1: all fields]...
+// We use Structure of Arrays (SoA):     [all positions][all velocities][scalars]...
+//
+// Within positions/velocities, we use DIMENSION-MAJOR layout:
+//   positions[d * particle_count + idx] = position of particle idx in dimension d
+//
+// This gives PERFECT memory coalescing when all threads in a warp access the
+// same dimension d simultaneously (which happens in the leapfrog inner loop).
+// Warp threads access consecutive memory: pos[d*N+0], pos[d*N+1], ..., pos[d*N+31]
 
 // Enable f16 support for reduced memory bandwidth (~50% memory reduction)
 enable f16;
 
-// MAX_DIMENSIONS = 4096 for 32x32 RGB images or 64x64 grayscale
-// Struct size: 4096*2 + 4 + 4 = 8200 bytes
-struct Particle {
-    pos: array<f16, 4096>,    // Position in parameter space (NN weights) - f16 for bandwidth
-    energy: f32,             // Current loss/energy value (f32 for precision)
-    entropy_bits: u32,       // Accumulated entropy bits (for extraction)
+// Per-particle scalar data (accessed once per particle per step)
+// Kept as struct since these aren't accessed in the dimension loop
+struct ParticleScalars {
+    energy: f32,              // Potential energy U(q) = loss value
+    kinetic_energy: f32,      // Kinetic energy K(p) = |p|²/2m
+    mass: f32,                // Particle mass m
+    entropy_bits: u32,        // Accumulated entropy bits (for extraction)
 }
 
-// Helper to read position as f32 for computation
+// Legacy Particle struct for compatibility with proposal buffer
+// TODO: Migrate proposal buffer to SoA in future optimization
+struct Particle {
+    pos: array<f16, 256>,
+    vel: array<f16, 256>,
+    energy: f32,
+    kinetic_energy: f32,
+    mass: f32,
+    entropy_bits: u32,
+}
+
+// Helper to read position from SoA layout as f32
+fn get_pos_soa(idx: u32, d: u32, pc: u32) -> f32 {
+    return f32(positions[d * pc + idx]);
+}
+
+// Helper to read velocity from SoA layout as f32
+fn get_vel_soa(idx: u32, d: u32, pc: u32) -> f32 {
+    return f32(velocities[d * pc + idx]);
+}
+
+// Helper to write position to SoA layout
+fn set_pos_soa(idx: u32, d: u32, pc: u32, val: f32) {
+    positions[d * pc + idx] = f16(val);
+}
+
+// Helper to write velocity to SoA layout
+fn set_vel_soa(idx: u32, d: u32, pc: u32, val: f32) {
+    velocities[d * pc + idx] = f16(val);
+}
+
+// Helper to get position array as f32 for loss functions (from SoA)
+fn get_pos_array_soa(idx: u32, dim: u32, pc: u32) -> array<f32, 256> {
+    var result: array<f32, 256>;
+    for (var i = 0u; i < dim; i = i + 1u) {
+        result[i] = f32(positions[i * pc + idx]);
+    }
+    return result;
+}
+
+// Legacy helpers for proposal buffer compatibility
 fn get_pos(p: Particle, d: u32) -> f32 {
     return f32(p.pos[d]);
 }
 
-// Helper to get position array as f32 for loss functions
-fn get_pos_array(p: Particle, dim: u32) -> array<f32, 4096> {
-    var result: array<f32, 4096>;
+fn get_pos_array(p: Particle, dim: u32) -> array<f32, 256> {
+    var result: array<f32, 256>;
     for (var i = 0u; i < dim; i = i + 1u) {
         result[i] = f32(p.pos[i]);
     }
@@ -38,21 +90,17 @@ fn get_pos_array(p: Particle, dim: u32) -> array<f32, 4096> {
 struct Uniforms {
     particle_count: u32,
     dim: u32,
-    gamma: f32,              // Friction coefficient
     temperature: f32,        // THE KEY PARAMETER: controls mode
-    repulsion_strength: f32,
-    kernel_bandwidth: f32,
-    dt: f32,
     seed: u32,
-    // Mode indicators (computed from temperature)
     mode: u32,               // 0=optimize, 1=sample, 2=entropy
-    // Loss function selector
-    // 0=neural_net_2d, 1=multimodal, 2=rosenbrock, 3=rastrigin, 4=ackley, 5=sphere
-    loss_fn: u32,
-    // Repulsion samples: 0 = skip repulsion, >0 = sample this many particles (O(nK) instead of O(n²))
-    repulsion_samples: u32,
-    // Use f16 compute for position updates (0=f32, 1=f16)
-    use_f16_compute: u32,
+    loss_fn: u32,            // Loss function selector
+    leapfrog_steps: u32,     // L - number of leapfrog steps per HMC iteration
+    step_size: f32,          // ε - leapfrog integration step size
+    mass: f32,               // m - particle mass for kinetic energy
+    _padding: u32,           // Padding for alignment
+    pos_min: f32,            // Position domain minimum (e.g., 0.0 for images)
+    pos_max: f32,            // Position domain maximum (e.g., 1.0 for images)
+    _padding2: vec2<u32>,    // Padding for 16-byte alignment
 }
 
 // Training data (same neural net task)
@@ -64,10 +112,17 @@ const TRAIN_Y: array<f32, 10> = array<f32, 10>(
 );
 const TRAIN_SIZE: u32 = 10u;
 
-@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+// SoA buffers - dimension-major layout for optimal GPU coalescing
+// Access pattern: buffer[dim * particle_count + particle_idx]
+@group(0) @binding(0) var<storage, read_write> positions: array<f16>;          // [dim][particle]
 @group(0) @binding(1) var<uniform> uniforms: Uniforms;
-@group(0) @binding(2) var<storage, read_write> repulsion: array<Particle>;
-@group(0) @binding(3) var<storage, read_write> entropy_output: array<u32>;
+@group(0) @binding(2) var<storage, read_write> velocities: array<f16>;         // [dim][particle]
+@group(0) @binding(3) var<storage, read_write> scalars: array<ParticleScalars>; // Per-particle scalars
+@group(0) @binding(4) var<storage, read_write> entropy_output: array<u32>;
+@group(0) @binding(5) var<storage, read_write> proposal_pos: array<f16>;       // Proposal positions [dim][particle]
+@group(0) @binding(6) var<storage, read_write> proposal_vel: array<f16>;       // Proposal velocities [dim][particle]
+@group(0) @binding(7) var<storage, read_write> proposal_scalars: array<ParticleScalars>; // Proposal scalars
+@group(0) @binding(8) var<storage, read_write> accept_flags: array<u32>;       // 1 = accepted, 0 = rejected
 
 // Hash function for pseudo-random numbers
 fn hash(seed: u32) -> u32 {
@@ -177,7 +232,7 @@ fn fast_cos_f16(x: f16) -> f16 {
 
 // Stub functions for custom expressions - these are overridden when using with_expr()
 // They must exist for the shader to compile even when LossFunction::Custom isn't used
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     // Default: sphere function
     var sum = 0.0;
     for (var i = 0u; i < dim; i = i + 1u) {
@@ -186,7 +241,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return sum;
 }
 
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     // Numerical gradient
     let eps = 0.001;
     var pos_plus = pos;
@@ -226,7 +281,7 @@ fn nn_gradient_2d(w1: f32, w2: f32) -> vec2<f32> {
 // N-dimensional multimodal loss function
 // Has 2^(dim/2) global minima at combinations of ±1.5 in each pair of dimensions
 // This generalizes the 2D neural net's two minima to higher dimensions
-fn multimodal_loss_nd(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn multimodal_loss_nd(pos: array<f32, 256>, dim: u32) -> f32 {
     var loss = 0.0;
     // Sum over pairs of dimensions
     for (var d = 0u; d < dim; d = d + 2u) {
@@ -246,7 +301,7 @@ fn multimodal_loss_nd(pos: array<f32, 4096>, dim: u32) -> f32 {
 }
 
 // Gradient of N-dimensional multimodal loss
-fn multimodal_gradient_nd(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn multimodal_gradient_nd(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let pair_idx = d_idx / 2u;
     let in_pair = d_idx % 2u;
     let d_base = pair_idx * 2u;
@@ -304,7 +359,7 @@ fn sigmoid(x: f32) -> f32 {
     return 1.0 / (1.0 + exp(-x));
 }
 
-fn mlp_xor_forward(pos: array<f32, 4096>, input: vec2<f32>) -> f32 {
+fn mlp_xor_forward(pos: array<f32, 256>, input: vec2<f32>) -> f32 {
     // Layer 1: input (2) -> hidden (2) with tanh
     let h0 = tanh(pos[0] * input.x + pos[1] * input.y + pos[4]);
     let h1 = tanh(pos[2] * input.x + pos[3] * input.y + pos[5]);
@@ -314,7 +369,7 @@ fn mlp_xor_forward(pos: array<f32, 4096>, input: vec2<f32>) -> f32 {
     return out;
 }
 
-fn mlp_xor_loss(pos: array<f32, 4096>) -> f32 {
+fn mlp_xor_loss(pos: array<f32, 256>) -> f32 {
     var total_loss = 0.0;
     for (var i = 0u; i < 4u; i = i + 1u) {
         let pred = mlp_xor_forward(pos, XOR_X[i]);
@@ -327,7 +382,7 @@ fn mlp_xor_loss(pos: array<f32, 4096>) -> f32 {
     return total_loss / 4.0;
 }
 
-fn mlp_xor_gradient(pos: array<f32, 4096>, d_idx: u32) -> f32 {
+fn mlp_xor_gradient(pos: array<f32, 256>, d_idx: u32) -> f32 {
     // Numerical gradient (more stable for complex networks)
     let eps = 0.001;
     var pos_plus = pos;
@@ -349,7 +404,7 @@ fn spiral_point(idx: u32, cls: u32) -> vec2<f32> {
     return vec2<f32>(r * fast_cos(theta), r * fast_sin(theta));
 }
 
-fn mlp_spiral_loss(pos: array<f32, 4096>) -> f32 {
+fn mlp_spiral_loss(pos: array<f32, 256>) -> f32 {
     var total_loss = 0.0;
 
     // Sample points from both spirals
@@ -371,7 +426,7 @@ fn mlp_spiral_loss(pos: array<f32, 4096>) -> f32 {
     return total_loss / f32(2u * SPIRAL_SIZE);
 }
 
-fn mlp_spiral_gradient(pos: array<f32, 4096>, d_idx: u32) -> f32 {
+fn mlp_spiral_gradient(pos: array<f32, 256>, d_idx: u32) -> f32 {
     let eps = 0.001;
     var pos_plus = pos;
     var pos_minus = pos;
@@ -403,7 +458,7 @@ fn circles_point(idx: u32, cls: u32) -> vec2<f32> {
     return vec2<f32>((r + noise) * cos(theta), (r + noise) * sin(theta));
 }
 
-fn mlp_deep_forward(pos: array<f32, 4096>, input: vec2<f32>) -> f32 {
+fn mlp_deep_forward(pos: array<f32, 256>, input: vec2<f32>) -> f32 {
     // Layer 1: input (2) -> hidden1 (4) with tanh
     // W1 is stored as [w00, w01, w10, w11, w20, w21, w30, w31] (4 neurons x 2 inputs)
     let h1_0 = tanh(pos[0] * input.x + pos[1] * input.y + pos[8]);
@@ -424,7 +479,7 @@ fn mlp_deep_forward(pos: array<f32, 4096>, input: vec2<f32>) -> f32 {
     return out;
 }
 
-fn mlp_deep_loss(pos: array<f32, 4096>) -> f32 {
+fn mlp_deep_loss(pos: array<f32, 256>) -> f32 {
     var total_loss = 0.0;
 
     // Sample points from both circles
@@ -446,7 +501,7 @@ fn mlp_deep_loss(pos: array<f32, 4096>) -> f32 {
     return total_loss / f32(2u * CIRCLES_SIZE);
 }
 
-fn mlp_deep_gradient(pos: array<f32, 4096>, d_idx: u32) -> f32 {
+fn mlp_deep_gradient(pos: array<f32, 256>, d_idx: u32) -> f32 {
     // Only compute gradient for active parameters
     if d_idx >= DEEP_DIM {
         return 0.0;
@@ -460,13 +515,586 @@ fn mlp_deep_gradient(pos: array<f32, 4096>, d_idx: u32) -> f32 {
 }
 
 // ============================================================================
+// VECTORIZED GRADIENT COMPUTATION
+// Computes full gradient vector at once to avoid O(D²) complexity
+// ============================================================================
+
+// Vectorized sphere gradient - O(D)
+fn sphere_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    for (var i = 0u; i < dim; i = i + 1u) {
+        (*grad)[i] = 2.0 * pos[i];
+    }
+}
+
+// Vectorized Rosenbrock gradient - O(D)
+fn rosenbrock_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    // Initialize all to zero
+    for (var i = 0u; i < dim; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+
+    for (var i = 0u; i < dim - 1u; i = i + 1u) {
+        let x_i = pos[i];
+        let x_i1 = pos[i + 1u];
+        // Contribution to gradient[i] from term (i, i+1)
+        (*grad)[i] = (*grad)[i] - 400.0 * x_i * (x_i1 - x_i * x_i) - 2.0 * (1.0 - x_i);
+        // Contribution to gradient[i+1] from term (i, i+1)
+        (*grad)[i + 1u] = (*grad)[i + 1u] + 200.0 * (x_i1 - x_i * x_i);
+    }
+}
+
+// Vectorized Rastrigin gradient - O(D)
+fn rastrigin_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    for (var i = 0u; i < dim; i = i + 1u) {
+        let x = pos[i];
+        (*grad)[i] = 2.0 * x + 20.0 * PI * fast_sin(TWO_PI * x);
+    }
+}
+
+// Vectorized Ackley gradient - O(D) instead of O(D²)!
+fn ackley_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    let a = 20.0;
+    let b = 0.2;
+    let n = f32(dim);
+
+    // Compute sums ONCE - this was being done D times before!
+    var sum_sq = 0.0;
+    var sum_cos = 0.0;
+    for (var i = 0u; i < dim; i = i + 1u) {
+        let x = pos[i];
+        sum_sq = sum_sq + x * x;
+        sum_cos = sum_cos + fast_cos(TWO_PI * x);
+    }
+
+    // Precompute expensive terms
+    let sqrt_term = fast_sqrt(sum_sq / n);
+    let exp1 = fast_exp(-b * sqrt_term);
+    let exp2 = fast_exp(sum_cos / n);
+
+    // Compute coefficient for first term
+    var coef1 = 0.0;
+    if sqrt_term > 0.0001 {
+        coef1 = a * b * exp1 / (n * sqrt_term);
+    }
+
+    // Compute all gradients using cached values - O(D) total
+    for (var i = 0u; i < dim; i = i + 1u) {
+        let x = pos[i];
+        // Gradient of first term: coef1 * x_i
+        // Gradient of second term: (2π/n) * sin(2π*x_i) * exp2
+        (*grad)[i] = coef1 * x + TWO_PI * fast_sin(TWO_PI * x) / n * exp2;
+    }
+}
+
+// Vectorized Schwefel gradient - O(D)
+fn schwefel_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    for (var i = 0u; i < dim; i = i + 1u) {
+        let x = pos[i];
+        let abs_x = abs(x);
+
+        if abs_x < 0.0001 {
+            (*grad)[i] = 0.0;
+        } else {
+            let sqrt_abs_x = fast_sqrt(abs_x);
+            let sign_x = select(-1.0, 1.0, x >= 0.0);
+            let g = fast_sin(sqrt_abs_x) + sign_x * sqrt_abs_x * fast_cos(sqrt_abs_x) / 2.0;
+            (*grad)[i] = -g;  // Negative because loss = constant - sum
+        }
+    }
+}
+
+// Vectorized Griewank gradient - O(D) with analytical gradient
+fn griewank_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    // First compute the product term (needed for all gradients)
+    var prod = 1.0;
+    for (var i = 0u; i < dim; i = i + 1u) {
+        prod = prod * fast_cos(pos[i] / fast_sqrt(f32(i + 1u)));
+    }
+
+    // Now compute each gradient component
+    for (var i = 0u; i < dim; i = i + 1u) {
+        let x = pos[i];
+        let sqrt_i = fast_sqrt(f32(i + 1u));
+        let cos_term = fast_cos(x / sqrt_i);
+
+        // d/dx_i of sum term: x_i / 2000
+        let sum_grad = x / 2000.0;
+
+        // d/dx_i of product term: -sin(x_i/sqrt(i+1)) / sqrt(i+1) * (prod / cos(x_i/sqrt(i+1)))
+        var prod_grad = 0.0;
+        if abs(cos_term) > 0.0001 {
+            prod_grad = fast_sin(x / sqrt_i) / sqrt_i * (prod / cos_term);
+        }
+
+        (*grad)[i] = sum_grad + prod_grad;
+    }
+}
+
+// Vectorized Levy gradient - O(D) analytical
+fn levy_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    // w_i = 1 + (x_i - 1) / 4
+    // dw_i/dx_i = 1/4
+
+    let w0 = 1.0 + (pos[0] - 1.0) / 4.0;
+    let wn = 1.0 + (pos[dim - 1u] - 1.0) / 4.0;
+
+    // Initialize gradients
+    for (var i = 0u; i < dim; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+
+    // Gradient of sin²(πw_0) term wrt x_0
+    let sin_pw0 = fast_sin(PI * w0);
+    let cos_pw0 = fast_cos(PI * w0);
+    (*grad)[0] = (*grad)[0] + 2.0 * sin_pw0 * cos_pw0 * PI * 0.25;
+
+    // Gradient of middle sum terms
+    for (var i = 0u; i < dim - 1u; i = i + 1u) {
+        let w = 1.0 + (pos[i] - 1.0) / 4.0;
+        let w_next = 1.0 + (pos[i + 1u] - 1.0) / 4.0;
+        let sin_term = fast_sin(PI * w_next);
+        let cos_term = fast_cos(PI * w_next);
+
+        // d/dx_i of (w-1)² * (1 + 10*sin²(πw_{i+1}))
+        (*grad)[i] = (*grad)[i] + 2.0 * (w - 1.0) * 0.25 * (1.0 + 10.0 * sin_term * sin_term);
+
+        // d/dx_{i+1} of (w-1)² * (1 + 10*sin²(πw_{i+1}))
+        (*grad)[i + 1u] = (*grad)[i + 1u] + (w - 1.0) * (w - 1.0) * 20.0 * sin_term * cos_term * PI * 0.25;
+    }
+
+    // Gradient of final term: (w_n-1)² * (1 + sin²(2πw_n))
+    let sin_2pwn = fast_sin(TWO_PI * wn);
+    let cos_2pwn = fast_cos(TWO_PI * wn);
+    (*grad)[dim - 1u] = (*grad)[dim - 1u] + 2.0 * (wn - 1.0) * 0.25 * (1.0 + sin_2pwn * sin_2pwn);
+    (*grad)[dim - 1u] = (*grad)[dim - 1u] + (wn - 1.0) * (wn - 1.0) * 2.0 * sin_2pwn * cos_2pwn * TWO_PI * 0.25;
+}
+
+// Vectorized Styblinski-Tang gradient - O(D)
+fn styblinski_tang_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    for (var i = 0u; i < dim; i = i + 1u) {
+        let x = pos[i];
+        (*grad)[i] = 2.0 * x * x * x - 16.0 * x + 2.5;
+    }
+}
+
+// Vectorized multimodal gradient - O(D)
+fn multimodal_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    for (var d = 0u; d < dim; d = d + 1u) {
+        let pair_idx = d / 2u;
+        let in_pair = d % 2u;
+        let d_base = pair_idx * 2u;
+
+        if d_base >= dim {
+            (*grad)[d] = 0.0;
+            continue;
+        }
+
+        let x = pos[d_base];
+        let y = pos[min(d_base + 1u, dim - 1u)];
+
+        let scale = 1.0 / (1.0 + f32(d_base) * 0.1);
+        let target_x = 1.5 * scale;
+        let target_y = 2.0 * scale;
+
+        let d_pos = (x - target_x) * (x - target_x) + (y - target_y) * (y - target_y);
+        let d_neg = (x + target_x) * (x + target_x) + (y + target_y) * (y + target_y);
+
+        if d_pos < d_neg {
+            if in_pair == 0u {
+                (*grad)[d] = x - target_x;
+            } else {
+                (*grad)[d] = y - target_y;
+            }
+        } else {
+            if in_pair == 0u {
+                (*grad)[d] = x + target_x;
+            } else {
+                (*grad)[d] = y + target_y;
+            }
+        }
+    }
+}
+
+// Vectorized 2D neural net gradient
+fn nn_gradient_2d_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    let g = nn_gradient_2d(pos[0], pos[1]);
+    (*grad)[0] = g.x;
+    (*grad)[1] = g.y;
+    for (var i = 2u; i < dim; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+}
+
+// Analytical MLP XOR gradient using backpropagation - O(1) loss evals instead of O(9)
+// Network: 2->2->1 with tanh hidden and sigmoid output
+// Parameters: W1[0..3], b1[4..5], W2[6..7], b2[8]
+fn mlp_xor_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    // Initialize gradients to zero
+    for (var i = 0u; i < 9u; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+    for (var i = 9u; i < dim; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+
+    // Accumulate gradients over all training examples
+    for (var sample = 0u; sample < 4u; sample = sample + 1u) {
+        let input = XOR_X[sample];
+        let label = XOR_Y[sample];
+
+        // Forward pass with intermediate values
+        let z0 = pos[0] * input.x + pos[1] * input.y + pos[4];
+        let z1 = pos[2] * input.x + pos[3] * input.y + pos[5];
+        let h0 = tanh(z0);
+        let h1 = tanh(z1);
+        let z_out = pos[6] * h0 + pos[7] * h1 + pos[8];
+        let pred = sigmoid(z_out);
+
+        // Backward pass
+        // dL/d(pred) for BCE with sigmoid = pred - label
+        let d_out = pred - label;
+
+        // Gradients for output layer (W2 and b2)
+        (*grad)[6] = (*grad)[6] + d_out * h0;  // dL/dw6
+        (*grad)[7] = (*grad)[7] + d_out * h1;  // dL/dw7
+        (*grad)[8] = (*grad)[8] + d_out;       // dL/db2
+
+        // Backprop through hidden layer (tanh derivative = 1 - tanh²)
+        let d_h0 = d_out * pos[6] * (1.0 - h0 * h0);
+        let d_h1 = d_out * pos[7] * (1.0 - h1 * h1);
+
+        // Gradients for hidden layer (W1 and b1)
+        (*grad)[0] = (*grad)[0] + d_h0 * input.x;  // dL/dw0
+        (*grad)[1] = (*grad)[1] + d_h0 * input.y;  // dL/dw1
+        (*grad)[2] = (*grad)[2] + d_h1 * input.x;  // dL/dw2
+        (*grad)[3] = (*grad)[3] + d_h1 * input.y;  // dL/dw3
+        (*grad)[4] = (*grad)[4] + d_h0;            // dL/db0
+        (*grad)[5] = (*grad)[5] + d_h1;            // dL/db1
+    }
+
+    // Average over samples
+    for (var i = 0u; i < 9u; i = i + 1u) {
+        (*grad)[i] = (*grad)[i] / 4.0;
+    }
+}
+
+// Analytical MLP spiral gradient using backpropagation
+// Same network as XOR, different dataset
+fn mlp_spiral_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    // Initialize gradients to zero
+    for (var i = 0u; i < 9u; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+    for (var i = 9u; i < dim; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+
+    let n_samples = f32(2u * SPIRAL_SIZE);
+
+    // Accumulate gradients over spiral points
+    for (var i = 0u; i < SPIRAL_SIZE; i = i + 1u) {
+        // Class 0 spiral (target = 0)
+        let p0 = spiral_point(i, 0u);
+        {
+            let input = p0;
+            let label = 0.0;
+
+            let z0 = pos[0] * input.x + pos[1] * input.y + pos[4];
+            let z1 = pos[2] * input.x + pos[3] * input.y + pos[5];
+            let h0 = tanh(z0);
+            let h1 = tanh(z1);
+            let z_out = pos[6] * h0 + pos[7] * h1 + pos[8];
+            let pred = sigmoid(z_out);
+
+            let d_out = pred - label;
+
+            (*grad)[6] = (*grad)[6] + d_out * h0;
+            (*grad)[7] = (*grad)[7] + d_out * h1;
+            (*grad)[8] = (*grad)[8] + d_out;
+
+            let d_h0 = d_out * pos[6] * (1.0 - h0 * h0);
+            let d_h1 = d_out * pos[7] * (1.0 - h1 * h1);
+
+            (*grad)[0] = (*grad)[0] + d_h0 * input.x;
+            (*grad)[1] = (*grad)[1] + d_h0 * input.y;
+            (*grad)[2] = (*grad)[2] + d_h1 * input.x;
+            (*grad)[3] = (*grad)[3] + d_h1 * input.y;
+            (*grad)[4] = (*grad)[4] + d_h0;
+            (*grad)[5] = (*grad)[5] + d_h1;
+        }
+
+        // Class 1 spiral (target = 1)
+        let p1 = spiral_point(i, 1u);
+        {
+            let input = p1;
+            let label = 1.0;
+
+            let z0 = pos[0] * input.x + pos[1] * input.y + pos[4];
+            let z1 = pos[2] * input.x + pos[3] * input.y + pos[5];
+            let h0 = tanh(z0);
+            let h1 = tanh(z1);
+            let z_out = pos[6] * h0 + pos[7] * h1 + pos[8];
+            let pred = sigmoid(z_out);
+
+            let d_out = pred - label;
+
+            (*grad)[6] = (*grad)[6] + d_out * h0;
+            (*grad)[7] = (*grad)[7] + d_out * h1;
+            (*grad)[8] = (*grad)[8] + d_out;
+
+            let d_h0 = d_out * pos[6] * (1.0 - h0 * h0);
+            let d_h1 = d_out * pos[7] * (1.0 - h1 * h1);
+
+            (*grad)[0] = (*grad)[0] + d_h0 * input.x;
+            (*grad)[1] = (*grad)[1] + d_h0 * input.y;
+            (*grad)[2] = (*grad)[2] + d_h1 * input.x;
+            (*grad)[3] = (*grad)[3] + d_h1 * input.y;
+            (*grad)[4] = (*grad)[4] + d_h0;
+            (*grad)[5] = (*grad)[5] + d_h1;
+        }
+    }
+
+    // Average over samples
+    for (var i = 0u; i < 9u; i = i + 1u) {
+        (*grad)[i] = (*grad)[i] / n_samples;
+    }
+}
+
+// Analytical deep MLP gradient using backpropagation - O(1) loss evals instead of O(37)
+// Network: 2->4->4->1 with tanh hidden layers and sigmoid output
+// Parameters: W1[0..7], b1[8..11], W2[12..27], b2[28..31], W3[32..35], b3[36]
+fn mlp_deep_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    // Initialize all gradients to zero
+    for (var i = 0u; i < DEEP_DIM; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+    for (var i = DEEP_DIM; i < dim; i = i + 1u) {
+        (*grad)[i] = 0.0;
+    }
+
+    let n_samples = f32(2u * CIRCLES_SIZE);
+
+    // Accumulate gradients over all circle points
+    for (var sample = 0u; sample < CIRCLES_SIZE; sample = sample + 1u) {
+        // Inner circle (class 0)
+        {
+            let input = circles_point(sample, 0u);
+            let label = 0.0;
+
+            // Forward pass - Layer 1
+            let z1_0 = pos[0] * input.x + pos[1] * input.y + pos[8];
+            let z1_1 = pos[2] * input.x + pos[3] * input.y + pos[9];
+            let z1_2 = pos[4] * input.x + pos[5] * input.y + pos[10];
+            let z1_3 = pos[6] * input.x + pos[7] * input.y + pos[11];
+            let h1_0 = tanh(z1_0);
+            let h1_1 = tanh(z1_1);
+            let h1_2 = tanh(z1_2);
+            let h1_3 = tanh(z1_3);
+
+            // Forward pass - Layer 2
+            let z2_0 = pos[12] * h1_0 + pos[13] * h1_1 + pos[14] * h1_2 + pos[15] * h1_3 + pos[28];
+            let z2_1 = pos[16] * h1_0 + pos[17] * h1_1 + pos[18] * h1_2 + pos[19] * h1_3 + pos[29];
+            let z2_2 = pos[20] * h1_0 + pos[21] * h1_1 + pos[22] * h1_2 + pos[23] * h1_3 + pos[30];
+            let z2_3 = pos[24] * h1_0 + pos[25] * h1_1 + pos[26] * h1_2 + pos[27] * h1_3 + pos[31];
+            let h2_0 = tanh(z2_0);
+            let h2_1 = tanh(z2_1);
+            let h2_2 = tanh(z2_2);
+            let h2_3 = tanh(z2_3);
+
+            // Forward pass - Output layer
+            let z_out = pos[32] * h2_0 + pos[33] * h2_1 + pos[34] * h2_2 + pos[35] * h2_3 + pos[36];
+            let pred = sigmoid(z_out);
+
+            // Backward pass
+            let d_out = pred - label;
+
+            // Output layer gradients
+            (*grad)[32] = (*grad)[32] + d_out * h2_0;
+            (*grad)[33] = (*grad)[33] + d_out * h2_1;
+            (*grad)[34] = (*grad)[34] + d_out * h2_2;
+            (*grad)[35] = (*grad)[35] + d_out * h2_3;
+            (*grad)[36] = (*grad)[36] + d_out;
+
+            // Backprop to layer 2
+            let d_h2_0 = d_out * pos[32] * (1.0 - h2_0 * h2_0);
+            let d_h2_1 = d_out * pos[33] * (1.0 - h2_1 * h2_1);
+            let d_h2_2 = d_out * pos[34] * (1.0 - h2_2 * h2_2);
+            let d_h2_3 = d_out * pos[35] * (1.0 - h2_3 * h2_3);
+
+            // Layer 2 weight gradients
+            (*grad)[12] = (*grad)[12] + d_h2_0 * h1_0;
+            (*grad)[13] = (*grad)[13] + d_h2_0 * h1_1;
+            (*grad)[14] = (*grad)[14] + d_h2_0 * h1_2;
+            (*grad)[15] = (*grad)[15] + d_h2_0 * h1_3;
+            (*grad)[16] = (*grad)[16] + d_h2_1 * h1_0;
+            (*grad)[17] = (*grad)[17] + d_h2_1 * h1_1;
+            (*grad)[18] = (*grad)[18] + d_h2_1 * h1_2;
+            (*grad)[19] = (*grad)[19] + d_h2_1 * h1_3;
+            (*grad)[20] = (*grad)[20] + d_h2_2 * h1_0;
+            (*grad)[21] = (*grad)[21] + d_h2_2 * h1_1;
+            (*grad)[22] = (*grad)[22] + d_h2_2 * h1_2;
+            (*grad)[23] = (*grad)[23] + d_h2_2 * h1_3;
+            (*grad)[24] = (*grad)[24] + d_h2_3 * h1_0;
+            (*grad)[25] = (*grad)[25] + d_h2_3 * h1_1;
+            (*grad)[26] = (*grad)[26] + d_h2_3 * h1_2;
+            (*grad)[27] = (*grad)[27] + d_h2_3 * h1_3;
+            (*grad)[28] = (*grad)[28] + d_h2_0;
+            (*grad)[29] = (*grad)[29] + d_h2_1;
+            (*grad)[30] = (*grad)[30] + d_h2_2;
+            (*grad)[31] = (*grad)[31] + d_h2_3;
+
+            // Backprop to layer 1
+            let d_h1_0 = (d_h2_0 * pos[12] + d_h2_1 * pos[16] + d_h2_2 * pos[20] + d_h2_3 * pos[24]) * (1.0 - h1_0 * h1_0);
+            let d_h1_1 = (d_h2_0 * pos[13] + d_h2_1 * pos[17] + d_h2_2 * pos[21] + d_h2_3 * pos[25]) * (1.0 - h1_1 * h1_1);
+            let d_h1_2 = (d_h2_0 * pos[14] + d_h2_1 * pos[18] + d_h2_2 * pos[22] + d_h2_3 * pos[26]) * (1.0 - h1_2 * h1_2);
+            let d_h1_3 = (d_h2_0 * pos[15] + d_h2_1 * pos[19] + d_h2_2 * pos[23] + d_h2_3 * pos[27]) * (1.0 - h1_3 * h1_3);
+
+            // Layer 1 weight gradients
+            (*grad)[0] = (*grad)[0] + d_h1_0 * input.x;
+            (*grad)[1] = (*grad)[1] + d_h1_0 * input.y;
+            (*grad)[2] = (*grad)[2] + d_h1_1 * input.x;
+            (*grad)[3] = (*grad)[3] + d_h1_1 * input.y;
+            (*grad)[4] = (*grad)[4] + d_h1_2 * input.x;
+            (*grad)[5] = (*grad)[5] + d_h1_2 * input.y;
+            (*grad)[6] = (*grad)[6] + d_h1_3 * input.x;
+            (*grad)[7] = (*grad)[7] + d_h1_3 * input.y;
+            (*grad)[8] = (*grad)[8] + d_h1_0;
+            (*grad)[9] = (*grad)[9] + d_h1_1;
+            (*grad)[10] = (*grad)[10] + d_h1_2;
+            (*grad)[11] = (*grad)[11] + d_h1_3;
+        }
+
+        // Outer circle (class 1)
+        {
+            let input = circles_point(sample, 1u);
+            let label = 1.0;
+
+            // Forward pass - Layer 1
+            let z1_0 = pos[0] * input.x + pos[1] * input.y + pos[8];
+            let z1_1 = pos[2] * input.x + pos[3] * input.y + pos[9];
+            let z1_2 = pos[4] * input.x + pos[5] * input.y + pos[10];
+            let z1_3 = pos[6] * input.x + pos[7] * input.y + pos[11];
+            let h1_0 = tanh(z1_0);
+            let h1_1 = tanh(z1_1);
+            let h1_2 = tanh(z1_2);
+            let h1_3 = tanh(z1_3);
+
+            // Forward pass - Layer 2
+            let z2_0 = pos[12] * h1_0 + pos[13] * h1_1 + pos[14] * h1_2 + pos[15] * h1_3 + pos[28];
+            let z2_1 = pos[16] * h1_0 + pos[17] * h1_1 + pos[18] * h1_2 + pos[19] * h1_3 + pos[29];
+            let z2_2 = pos[20] * h1_0 + pos[21] * h1_1 + pos[22] * h1_2 + pos[23] * h1_3 + pos[30];
+            let z2_3 = pos[24] * h1_0 + pos[25] * h1_1 + pos[26] * h1_2 + pos[27] * h1_3 + pos[31];
+            let h2_0 = tanh(z2_0);
+            let h2_1 = tanh(z2_1);
+            let h2_2 = tanh(z2_2);
+            let h2_3 = tanh(z2_3);
+
+            // Forward pass - Output layer
+            let z_out = pos[32] * h2_0 + pos[33] * h2_1 + pos[34] * h2_2 + pos[35] * h2_3 + pos[36];
+            let pred = sigmoid(z_out);
+
+            // Backward pass
+            let d_out = pred - label;
+
+            // Output layer gradients
+            (*grad)[32] = (*grad)[32] + d_out * h2_0;
+            (*grad)[33] = (*grad)[33] + d_out * h2_1;
+            (*grad)[34] = (*grad)[34] + d_out * h2_2;
+            (*grad)[35] = (*grad)[35] + d_out * h2_3;
+            (*grad)[36] = (*grad)[36] + d_out;
+
+            // Backprop to layer 2
+            let d_h2_0 = d_out * pos[32] * (1.0 - h2_0 * h2_0);
+            let d_h2_1 = d_out * pos[33] * (1.0 - h2_1 * h2_1);
+            let d_h2_2 = d_out * pos[34] * (1.0 - h2_2 * h2_2);
+            let d_h2_3 = d_out * pos[35] * (1.0 - h2_3 * h2_3);
+
+            // Layer 2 weight gradients
+            (*grad)[12] = (*grad)[12] + d_h2_0 * h1_0;
+            (*grad)[13] = (*grad)[13] + d_h2_0 * h1_1;
+            (*grad)[14] = (*grad)[14] + d_h2_0 * h1_2;
+            (*grad)[15] = (*grad)[15] + d_h2_0 * h1_3;
+            (*grad)[16] = (*grad)[16] + d_h2_1 * h1_0;
+            (*grad)[17] = (*grad)[17] + d_h2_1 * h1_1;
+            (*grad)[18] = (*grad)[18] + d_h2_1 * h1_2;
+            (*grad)[19] = (*grad)[19] + d_h2_1 * h1_3;
+            (*grad)[20] = (*grad)[20] + d_h2_2 * h1_0;
+            (*grad)[21] = (*grad)[21] + d_h2_2 * h1_1;
+            (*grad)[22] = (*grad)[22] + d_h2_2 * h1_2;
+            (*grad)[23] = (*grad)[23] + d_h2_2 * h1_3;
+            (*grad)[24] = (*grad)[24] + d_h2_3 * h1_0;
+            (*grad)[25] = (*grad)[25] + d_h2_3 * h1_1;
+            (*grad)[26] = (*grad)[26] + d_h2_3 * h1_2;
+            (*grad)[27] = (*grad)[27] + d_h2_3 * h1_3;
+            (*grad)[28] = (*grad)[28] + d_h2_0;
+            (*grad)[29] = (*grad)[29] + d_h2_1;
+            (*grad)[30] = (*grad)[30] + d_h2_2;
+            (*grad)[31] = (*grad)[31] + d_h2_3;
+
+            // Backprop to layer 1
+            let d_h1_0 = (d_h2_0 * pos[12] + d_h2_1 * pos[16] + d_h2_2 * pos[20] + d_h2_3 * pos[24]) * (1.0 - h1_0 * h1_0);
+            let d_h1_1 = (d_h2_0 * pos[13] + d_h2_1 * pos[17] + d_h2_2 * pos[21] + d_h2_3 * pos[25]) * (1.0 - h1_1 * h1_1);
+            let d_h1_2 = (d_h2_0 * pos[14] + d_h2_1 * pos[18] + d_h2_2 * pos[22] + d_h2_3 * pos[26]) * (1.0 - h1_2 * h1_2);
+            let d_h1_3 = (d_h2_0 * pos[15] + d_h2_1 * pos[19] + d_h2_2 * pos[23] + d_h2_3 * pos[27]) * (1.0 - h1_3 * h1_3);
+
+            // Layer 1 weight gradients
+            (*grad)[0] = (*grad)[0] + d_h1_0 * input.x;
+            (*grad)[1] = (*grad)[1] + d_h1_0 * input.y;
+            (*grad)[2] = (*grad)[2] + d_h1_1 * input.x;
+            (*grad)[3] = (*grad)[3] + d_h1_1 * input.y;
+            (*grad)[4] = (*grad)[4] + d_h1_2 * input.x;
+            (*grad)[5] = (*grad)[5] + d_h1_2 * input.y;
+            (*grad)[6] = (*grad)[6] + d_h1_3 * input.x;
+            (*grad)[7] = (*grad)[7] + d_h1_3 * input.y;
+            (*grad)[8] = (*grad)[8] + d_h1_0;
+            (*grad)[9] = (*grad)[9] + d_h1_1;
+            (*grad)[10] = (*grad)[10] + d_h1_2;
+            (*grad)[11] = (*grad)[11] + d_h1_3;
+        }
+    }
+
+    // Average over samples
+    for (var i = 0u; i < DEEP_DIM; i = i + 1u) {
+        (*grad)[i] = (*grad)[i] / n_samples;
+    }
+}
+
+// Vectorized custom gradient - calls user-provided custom_gradient for each component
+fn custom_gradient_full(pos: array<f32, 256>, dim: u32, grad: ptr<function, array<f32, 256>>) {
+    for (var i = 0u; i < dim; i = i + 1u) {
+        (*grad)[i] = custom_gradient(pos, dim, i);
+    }
+}
+
+// Master dispatch for vectorized gradients
+fn compute_gradient_full(pos: array<f32, 256>, dim: u32, loss_fn: u32, grad: ptr<function, array<f32, 256>>) {
+    switch loss_fn {
+        case 0u: { nn_gradient_2d_full(pos, dim, grad); }
+        case 1u: { multimodal_gradient_full(pos, dim, grad); }
+        case 2u: { rosenbrock_gradient_full(pos, dim, grad); }
+        case 3u: { rastrigin_gradient_full(pos, dim, grad); }
+        case 4u: { ackley_gradient_full(pos, dim, grad); }
+        case 5u: { sphere_gradient_full(pos, dim, grad); }
+        case 6u: { mlp_xor_gradient_full(pos, dim, grad); }
+        case 7u: { mlp_spiral_gradient_full(pos, dim, grad); }
+        case 8u: { mlp_deep_gradient_full(pos, dim, grad); }
+        case 9u: { schwefel_gradient_full(pos, dim, grad); }
+        case 10u: { custom_gradient_full(pos, dim, grad); }
+        case 11u: { griewank_gradient_full(pos, dim, grad); }
+        case 12u: { levy_gradient_full(pos, dim, grad); }
+        case 13u: { styblinski_tang_gradient_full(pos, dim, grad); }
+        default: { sphere_gradient_full(pos, dim, grad); }
+    }
+}
+
+// ============================================================================
 // CLASSIC OPTIMIZATION BENCHMARK FUNCTIONS
 // ============================================================================
 
 // Rosenbrock function (N-dimensional)
 // Global minimum: f(1,1,...,1) = 0
 // Famous "banana valley" - tests ability to follow narrow curved valleys
-fn rosenbrock_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn rosenbrock_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var sum = 0.0;
     for (var i = 0u; i < dim - 1u; i = i + 1u) {
         let x_i = pos[i];
@@ -476,7 +1104,7 @@ fn rosenbrock_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return sum;
 }
 
-fn rosenbrock_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn rosenbrock_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     var grad = 0.0;
     let x_i = pos[d_idx];
 
@@ -498,7 +1126,7 @@ fn rosenbrock_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 // Rastrigin function (N-dimensional)
 // Global minimum: f(0,0,...,0) = 0
 // Highly multimodal with regular grid of local minima - tests global search
-fn rastrigin_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn rastrigin_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var sum = 10.0 * f32(dim);
     for (var i = 0u; i < dim; i = i + 1u) {
         let x = pos[i];
@@ -507,7 +1135,7 @@ fn rastrigin_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return sum;
 }
 
-fn rastrigin_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn rastrigin_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let x = pos[d_idx];
     return 2.0 * x + 20.0 * PI * fast_sin(TWO_PI * x);
 }
@@ -515,7 +1143,7 @@ fn rastrigin_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 // Ackley function (N-dimensional)
 // Global minimum: f(0,0,...,0) = 0
 // Nearly flat outer region with deep hole at center - tests exploitation
-fn ackley_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn ackley_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let a = 20.0;
     let b = 0.2;
 
@@ -532,7 +1160,7 @@ fn ackley_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return -a * fast_exp(-b * sqrt_term) - fast_exp(sum_cos / n) + a + 2.71828182845;
 }
 
-fn ackley_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn ackley_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let a = 20.0;
     let b = 0.2;
 
@@ -562,7 +1190,7 @@ fn ackley_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 // Sphere function (N-dimensional) - simple convex baseline
 // Global minimum: f(0,0,...,0) = 0
-fn sphere_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn sphere_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var sum = 0.0;
     for (var i = 0u; i < dim; i = i + 1u) {
         sum = sum + pos[i] * pos[i];
@@ -570,14 +1198,14 @@ fn sphere_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return sum;
 }
 
-fn sphere_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn sphere_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     return 2.0 * pos[d_idx];
 }
 
 // Schwefel function (N-dimensional) - deceptive global minimum far from origin
 // Global minimum: f(420.9687, ..., 420.9687) = 0
 // The global minimum is far from the origin, and local minima are deceptive
-fn schwefel_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn schwefel_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var sum = 0.0;
     for (var i = 0u; i < dim; i = i + 1u) {
         let x = pos[i];
@@ -586,7 +1214,7 @@ fn schwefel_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return 418.9829 * f32(dim) - sum;
 }
 
-fn schwefel_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn schwefel_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let x = pos[d_idx];
     let abs_x = abs(x);
 
@@ -608,7 +1236,7 @@ fn schwefel_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 // Griewank function (N-dimensional)
 // Global minimum: f(0, 0, ..., 0) = 0
 // f(x) = 1 + sum(x_i^2 / 4000) - prod(cos(x_i / sqrt(i+1)))
-fn griewank_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn griewank_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var sum_term = 0.0;
     var prod_term = 1.0;
     for (var i = 0u; i < dim; i = i + 1u) {
@@ -619,7 +1247,7 @@ fn griewank_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return 1.0 + sum_term - prod_term;
 }
 
-fn griewank_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn griewank_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     // Numerical gradient for product term complexity
     let eps = 0.001;
     var pos_plus = pos;
@@ -633,7 +1261,7 @@ fn griewank_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 // Global minimum: f(1, 1, ..., 1) = 0
 // w_i = 1 + (x_i - 1) / 4
 // f(x) = sin²(πw_1) + sum[(w_i-1)²(1+10sin²(πw_i+1))] + (w_n-1)²(1+sin²(2πw_n))
-fn levy_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn levy_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let w0 = 1.0 + (pos[0] - 1.0) / 4.0;
     let wn = 1.0 + (pos[dim - 1u] - 1.0) / 4.0;
 
@@ -653,7 +1281,7 @@ fn levy_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return sum;
 }
 
-fn levy_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn levy_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let eps = 0.001;
     var pos_plus = pos;
     var pos_minus = pos;
@@ -665,7 +1293,7 @@ fn levy_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 // Styblinski-Tang function (N-dimensional)
 // Global minimum: f(-2.903534, ..., -2.903534) ≈ -39.16599 * n
 // f(x) = 0.5 * sum(x_i^4 - 16*x_i^2 + 5*x_i)
-fn styblinski_tang_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn styblinski_tang_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var sum = 0.0;
     for (var i = 0u; i < dim; i = i + 1u) {
         let x = pos[i];
@@ -675,300 +1303,302 @@ fn styblinski_tang_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
     return 0.5 * sum;
 }
 
-fn styblinski_tang_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn styblinski_tang_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     let x = pos[d_idx];
     // d/dx [0.5 * (x^4 - 16x^2 + 5x)] = 0.5 * (4x^3 - 32x + 5) = 2x^3 - 16x + 2.5
     return 2.0 * x * x * x - 16.0 * x + 2.5;
 }
 
 // ============================================================================
+// HAMILTONIAN MONTE CARLO (HMC) IMPLEMENTATION
+//
+// HMC uses Hamiltonian dynamics for efficient exploration:
+//   H(q,p) = U(q) + K(p) where U = potential (loss), K = kinetic (|p|²/2m)
+//
+// Temperature controls momentum distribution: p ~ N(0, mT)
+//   T → 0:   Small momenta → momentum-based optimization
+//   T ~ 0.1: Balanced → efficient posterior sampling
+//   T >> 1:  Large momenta → chaotic exploration (entropy)
+// ============================================================================
 
-// Pass 1: Compute pairwise repulsion (SVGD kernel gradient)
-// Optimized: Uses subsampling when repulsion_samples > 0 to achieve O(nK) instead of O(n²)
-@compute @workgroup_size(64)
-fn compute_repulsion(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let idx = global_id.x;
-    if idx >= uniforms.particle_count {
-        return;
-    }
-
-    // Skip repulsion entirely if repulsion_samples is 0 (pure optimization mode)
-    if uniforms.repulsion_samples == 0u {
-        for (var d = 0u; d < 256u; d = d + 1u) {
-            repulsion[idx].pos[d] = f16(0.0);
-        }
-        return;
-    }
-
-    var p_i = particles[idx];
-    let h_sq = uniforms.kernel_bandwidth * uniforms.kernel_bandwidth;
-
-    // Accumulate repulsion in f32 for precision
-    var rep: array<f32, 4096>;
-    for (var d = 0u; d < 256u; d = d + 1u) {
-        rep[d] = 0.0;
-    }
-
-    // Determine how many particles to sample
-    let sample_count = min(uniforms.repulsion_samples, uniforms.particle_count - 1u);
-
-    // Use subsampling: randomly select K particles instead of all N
-    // This reduces O(n²) to O(nK) complexity
-    for (var s = 0u; s < sample_count; s = s + 1u) {
-        // Hash-based random particle selection
-        // Different particles get different random sequences via idx mixing
-        let rng_seed = uniforms.seed + idx * 1337u + s * 7919u;
-        let j = hash(rng_seed) % uniforms.particle_count;
-
-        // Skip self
-        if j == idx {
-            continue;
-        }
-
-        var p_j = particles[j];
-
-        var dist_sq = 0.0;
-        for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-            let diff = f32(p_i.pos[d]) - f32(p_j.pos[d]);
-            dist_sq = dist_sq + diff * diff;
-        }
-        let k = exp(-dist_sq / (2.0 * h_sq));
-
-        // Kernel gradient pushes particles apart
-        for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-            let diff = f32(p_i.pos[d]) - f32(p_j.pos[d]);
-            rep[d] = rep[d] - k * diff / h_sq;
-        }
-    }
-
-    // Scale by effective sample count (importance sampling correction)
-    let effective_n = f32(sample_count);
-    for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-        repulsion[idx].pos[d] = f16(rep[d] * uniforms.repulsion_strength / effective_n);
+// Helper: Compute loss for any loss function
+fn compute_loss(pos: array<f32, 256>, dim: u32, loss_fn: u32) -> f32 {
+    switch loss_fn {
+        case 0u: { return nn_loss_2d(pos[0], pos[1]); }
+        case 1u: { return multimodal_loss_nd(pos, dim); }
+        case 2u: { return rosenbrock_loss(pos, dim); }
+        case 3u: { return rastrigin_loss(pos, dim); }
+        case 4u: { return ackley_loss(pos, dim); }
+        case 5u: { return sphere_loss(pos, dim); }
+        case 6u: { return mlp_xor_loss(pos); }
+        case 7u: { return mlp_spiral_loss(pos); }
+        case 8u: { return mlp_deep_loss(pos); }
+        case 9u: { return schwefel_loss(pos, dim); }
+        case 10u: { return custom_loss(pos, dim); }
+        case 11u: { return griewank_loss(pos, dim); }
+        case 12u: { return levy_loss(pos, dim); }
+        case 13u: { return styblinski_tang_loss(pos, dim); }
+        default: { return sphere_loss(pos, dim); }
     }
 }
 
-// Pass 2: Update particles with temperature-controlled dynamics
-@compute @workgroup_size(64)
-fn update_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let idx = global_id.x;
-    if idx >= uniforms.particle_count {
-        return;
-    }
-
-    var p = particles[idx];
-
-    // Convert f16 positions to f32 for computation
-    var pos_f32 = get_pos_array(p, uniforms.dim);
-
-    // Compute loss based on selected loss function
-    // 0=neural_net_2d, 1=multimodal, 2=rosenbrock, 3=rastrigin, 4=ackley, 5=sphere
-    var loss_grad_2d = vec2<f32>(0.0, 0.0);
-
-    switch uniforms.loss_fn {
+// Helper: Compute gradient for any loss function
+fn compute_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32, loss_fn: u32) -> f32 {
+    switch loss_fn {
         case 0u: {
-            // Neural net 2D (original)
-            p.energy = nn_loss_2d(pos_f32[0], pos_f32[1]);
-            loss_grad_2d = nn_gradient_2d(pos_f32[0], pos_f32[1]);
+            let grad = nn_gradient_2d(pos[0], pos[1]);
+            if d_idx == 0u { return grad.x; }
+            else if d_idx == 1u { return grad.y; }
+            else { return 0.0; }
         }
-        case 1u: {
-            // Multimodal N-D
-            p.energy = multimodal_loss_nd(pos_f32, uniforms.dim);
-        }
-        case 2u: {
-            // Rosenbrock
-            p.energy = rosenbrock_loss(pos_f32, uniforms.dim);
-        }
-        case 3u: {
-            // Rastrigin
-            p.energy = rastrigin_loss(pos_f32, uniforms.dim);
-        }
-        case 4u: {
-            // Ackley
-            p.energy = ackley_loss(pos_f32, uniforms.dim);
-        }
-        case 5u: {
-            // Sphere
-            p.energy = sphere_loss(pos_f32, uniforms.dim);
-        }
-        case 6u: {
-            // MLP XOR (real neural network)
-            p.energy = mlp_xor_loss(pos_f32);
-        }
-        case 7u: {
-            // MLP Spiral classification
-            p.energy = mlp_spiral_loss(pos_f32);
-        }
-        case 8u: {
-            // Deep MLP (3-layer) on circles
-            p.energy = mlp_deep_loss(pos_f32);
-        }
-        case 9u: {
-            // Schwefel - deceptive with far-off global minimum
-            p.energy = schwefel_loss(pos_f32, uniforms.dim);
-        }
-        case 10u: {
-            // Custom expression-based loss function (injected at shader compile time)
-            p.energy = custom_loss(pos_f32, uniforms.dim);
-        }
-        case 11u: {
-            // Griewank
-            p.energy = griewank_loss(pos_f32, uniforms.dim);
-        }
-        case 12u: {
-            // Levy
-            p.energy = levy_loss(pos_f32, uniforms.dim);
-        }
-        case 13u: {
-            // Styblinski-Tang
-            p.energy = styblinski_tang_loss(pos_f32, uniforms.dim);
-        }
-        default: {
-            p.energy = nn_loss_2d(pos_f32[0], pos_f32[1]);
-            loss_grad_2d = nn_gradient_2d(pos_f32[0], pos_f32[1]);
-        }
+        case 1u: { return multimodal_gradient_nd(pos, dim, d_idx); }
+        case 2u: { return rosenbrock_gradient(pos, dim, d_idx); }
+        case 3u: { return rastrigin_gradient(pos, dim, d_idx); }
+        case 4u: { return ackley_gradient(pos, dim, d_idx); }
+        case 5u: { return sphere_gradient(pos, dim, d_idx); }
+        case 6u: { return mlp_xor_gradient(pos, d_idx); }
+        case 7u: { return mlp_spiral_gradient(pos, d_idx); }
+        case 8u: { return mlp_deep_gradient(pos, d_idx); }
+        case 9u: { return schwefel_gradient(pos, dim, d_idx); }
+        case 10u: { return custom_gradient(pos, dim, d_idx); }
+        case 11u: { return griewank_gradient(pos, dim, d_idx); }
+        case 12u: { return levy_gradient(pos, dim, d_idx); }
+        case 13u: { return styblinski_tang_gradient(pos, dim, d_idx); }
+        default: { return 2.0 * pos[d_idx]; }  // sphere gradient
     }
-
-    // THE UNIFIED UPDATE EQUATION:
-    // dx = -γ∇E(x)·dt + repulsion·dt + √(2γT·dt)·dW
-    //
-    // When T >> 1: Noise dominates → chaotic exploration (entropy mode)
-    // When T ~ 0.1: Balance → samples from exp(-E/T) (sampling mode)
-    // When T → 0: Gradient dominates → optimization (optimize mode)
-
-    let noise_scale = sqrt(2.0 * uniforms.gamma * uniforms.temperature * uniforms.dt);
-
-    // Repulsion scaling: stronger at medium T, weaker at extremes
-    // This keeps particles diverse during sampling, less important for pure optimization
-    let repulsion_scale = select(
-        1.0,
-        select(0.1, 1.0, uniforms.temperature > 0.001),
-        uniforms.temperature < 10.0
-    );
-
-    for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-        // Generate noise
-        let seed1 = uniforms.seed + idx * 17u + d * 31u;
-        let seed2 = uniforms.seed + idx * 37u + d * 53u + 12345u;
-        let noise = randn(seed1, seed2);
-
-        // Get gradient for this dimension based on loss function
-        var grad = 0.0;
-        switch uniforms.loss_fn {
-            case 0u: {
-                // Neural net 2D
-                if d == 0u {
-                    grad = loss_grad_2d.x;
-                } else if d == 1u {
-                    grad = loss_grad_2d.y;
-                }
-            }
-            case 1u: {
-                // Multimodal N-D
-                grad = multimodal_gradient_nd(pos_f32, uniforms.dim, d);
-            }
-            case 2u: {
-                // Rosenbrock
-                grad = rosenbrock_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 3u: {
-                // Rastrigin
-                grad = rastrigin_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 4u: {
-                // Ackley
-                grad = ackley_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 5u: {
-                // Sphere
-                grad = sphere_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 6u: {
-                // MLP XOR
-                grad = mlp_xor_gradient(pos_f32, d);
-            }
-            case 7u: {
-                // MLP Spiral
-                grad = mlp_spiral_gradient(pos_f32, d);
-            }
-            case 8u: {
-                // Deep MLP
-                grad = mlp_deep_gradient(pos_f32, d);
-            }
-            case 9u: {
-                // Schwefel
-                grad = schwefel_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 10u: {
-                // Custom expression-based gradient
-                grad = custom_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 11u: {
-                // Griewank
-                grad = griewank_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 12u: {
-                // Levy
-                grad = levy_gradient(pos_f32, uniforms.dim, d);
-            }
-            case 13u: {
-                // Styblinski-Tang
-                grad = styblinski_tang_gradient(pos_f32, uniforms.dim, d);
-            }
-            default: {
-                if d == 0u {
-                    grad = loss_grad_2d.x;
-                } else if d == 1u {
-                    grad = loss_grad_2d.y;
-                }
-            }
-        }
-
-        // Clip large gradients to prevent explosion (esp. for Rosenbrock)
-        let grad_clipped = clamp(grad, -10.0, 10.0);
-
-        // POSITION_UPDATE_CODE_START (replaced at compile time for f16/f32 variants)
-        // F32 COMPUTE PATH (default)
-        let grad_term = -uniforms.gamma * grad_clipped;
-        let repulsion_term = f32(repulsion[idx].pos[d]) * repulsion_scale;
-        let noise_term = noise_scale * noise;
-
-        // Update position in f32
-        pos_f32[d] = pos_f32[d] + (grad_term + repulsion_term) * uniforms.dt + noise_term;
-
-        // Clamp based on loss function (Schwefel needs larger domain)
-        if uniforms.loss_fn == 9u {
-            pos_f32[d] = clamp(pos_f32[d], -500.0, 500.0);
-        } else {
-            pos_f32[d] = clamp(pos_f32[d], -5.0, 5.0);
-        }
-
-        // Write back as f16
-        p.pos[d] = f16(pos_f32[d]);
-        // POSITION_UPDATE_CODE_END
-    }
-
-    // ENTROPY EXTRACTION (at high temperature)
-    // When T is high, particle positions are chaotic - extract bits!
-    if uniforms.temperature > 1.0 {
-        // Mix position bits into entropy accumulator (use f32 positions for bit extraction)
-        var entropy = p.entropy_bits;
-        for (var d = 0u; d < uniforms.dim; d = d + 1u) {
-            let pos_bits = bitcast<u32>(pos_f32[d] * 1e6);
-            entropy = entropy ^ hash(pos_bits + idx * 1000u + d);
-        }
-        p.entropy_bits = entropy;
-
-        // Write to entropy output buffer
-        entropy_output[idx] = entropy;
-    }
-
-    particles[idx] = p;
 }
 
-// Pass 3: Collect statistics (optional, for visualization)
-@compute @workgroup_size(64)
-fn collect_stats(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    // Could compute mean, variance, entropy estimates here
-    // For now, stats are computed on CPU after readback
+// Helper: Compute kinetic energy K = |p|²/2m
+fn compute_kinetic_energy(vel: array<f32, 256>, dim: u32, mass: f32) -> f32 {
+    var ke = 0.0;
+    for (var d = 0u; d < dim; d = d + 1u) {
+        ke = ke + vel[d] * vel[d];
+    }
+    return ke / (2.0 * mass);
+}
+
+// ============================================================================
+// PARTICLE INITIALIZATION
+// Initialize particles with random positions in [pos_min, pos_max]
+// Much faster than CPU initialization for large particle counts
+// ============================================================================
+@compute @workgroup_size(256)
+fn initialize_particles(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let pc = uniforms.particle_count;
+    if idx >= pc { return; }
+
+    // Initialize position with uniform random in [pos_min, pos_max]
+    // Using SoA dimension-major layout for coalesced access
+    let range = uniforms.pos_max - uniforms.pos_min;
+    for (var d = 0u; d < uniforms.dim; d = d + 1u) {
+        // XOR-shift random number generator (same as CPU version)
+        var seed = uniforms.seed + idx * 1000u + d;
+        seed = seed ^ (seed << 13u);
+        seed = seed ^ (seed >> 7u);
+        seed = seed ^ (seed << 17u);
+        let rand_val = f32(seed & 0xFFFFu) / 65535.0;
+        // SoA write: positions[dim * particle_count + particle_idx]
+        positions[d * pc + idx] = f16(uniforms.pos_min + rand_val * range);
+        velocities[d * pc + idx] = f16(0.0);
+    }
+
+    // Initialize scalar fields
+    var s: ParticleScalars;
+    s.energy = 0.0;
+    s.kinetic_energy = 0.0;
+    s.mass = uniforms.mass;
+    s.entropy_bits = 0u;
+    scalars[idx] = s;
+}
+
+// ============================================================================
+// HMC Pass 1: REFRESH MOMENTUM
+// Sample p ~ N(0, mT) from Maxwell-Boltzmann distribution
+// Store initial state for later accept/reject decision
+// ============================================================================
+@compute @workgroup_size(256)
+fn refresh_momentum(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let pc = uniforms.particle_count;
+    if idx >= pc { return; }
+
+    let m = uniforms.mass;
+    let T = uniforms.temperature;
+    let sigma = sqrt(m * T);  // Standard deviation of Maxwell-Boltzmann
+    let dim = uniforms.dim;
+
+    // Load positions into local array and sample new momentum (SoA access)
+    var pos_f32: array<f32, 256>;
+    var vel_f32: array<f32, 256>;
+    for (var d = 0u; d < dim; d = d + 1u) {
+        // Read position from SoA
+        pos_f32[d] = f32(positions[d * pc + idx]);
+
+        // Sample momentum from N(0, σ²)
+        let seed1 = uniforms.seed + idx * 17u + d * 31u + 99999u;
+        let seed2 = uniforms.seed + idx * 37u + d * 53u + 77777u;
+        vel_f32[d] = sigma * randn(seed1, seed2);
+
+        // Write new velocity to SoA
+        velocities[d * pc + idx] = f16(vel_f32[d]);
+
+        // Store initial state in proposal buffers (SoA)
+        proposal_pos[d * pc + idx] = f16(pos_f32[d]);
+        proposal_vel[d * pc + idx] = f16(vel_f32[d]);
+    }
+
+    // Compute initial potential energy U(q)
+    let energy = compute_loss(pos_f32, dim, uniforms.loss_fn);
+
+    // Compute initial kinetic energy K = |p|²/2m
+    let kinetic_energy = compute_kinetic_energy(vel_f32, dim, m);
+
+    // Update scalar fields
+    var s: ParticleScalars;
+    s.energy = energy;
+    s.kinetic_energy = kinetic_energy;
+    s.mass = m;
+    s.entropy_bits = scalars[idx].entropy_bits;
+    scalars[idx] = s;
+
+    // Store initial scalars in proposal
+    proposal_scalars[idx] = s;
+}
+
+// ============================================================================
+// HMC Pass 2: BATCHED LEAPFROG INTEGRATION
+// Symplectic integrator that preserves phase space volume
+// All L leapfrog steps run in a SINGLE dispatch (no global memory round-trips)
+//
+// Leapfrog scheme (per step):
+//   p(t + ε/2) = p(t) - (ε/2)∇U(q(t))
+//   q(t + ε)   = q(t) + ε·p(t + ε/2)/m
+//   p(t + ε)   = p(t + ε/2) - (ε/2)∇U(q(t + ε))
+//
+// Key optimization: Uses vectorized gradients (O(D) instead of O(D²) for Ackley etc.)
+// ============================================================================
+@compute @workgroup_size(256)
+fn leapfrog_step(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let pc = uniforms.particle_count;
+    if idx >= pc { return; }
+
+    let eps = uniforms.step_size;
+    let m = uniforms.mass;
+    let L = uniforms.leapfrog_steps;
+    let dim = uniforms.dim;
+
+    // Load into local registers from SoA buffers (coalesced reads)
+    var pos_f32: array<f32, 256>;
+    var vel_f32: array<f32, 256>;
+    for (var d = 0u; d < dim; d = d + 1u) {
+        pos_f32[d] = f32(positions[d * pc + idx]);
+        vel_f32[d] = f32(velocities[d * pc + idx]);
+    }
+
+    // Gradient array (reused across all L steps)
+    var grad: array<f32, 256>;
+
+    // Position domain bounds from uniforms (configurable per loss function)
+    let pos_min = uniforms.pos_min;
+    let pos_max = uniforms.pos_max;
+
+    // Run ALL L leapfrog steps in local registers
+    for (var l = 0u; l < L; l = l + 1u) {
+        // Compute full gradient vector ONCE (vectorized - O(D) not O(D²))
+        compute_gradient_full(pos_f32, dim, uniforms.loss_fn, &grad);
+
+        // Half step for momentum: p(t + ε/2) = p(t) - (ε/2)∇U(q(t))
+        for (var d = 0u; d < dim; d = d + 1u) {
+            let grad_clipped = clamp(grad[d], -10.0, 10.0);
+            vel_f32[d] = vel_f32[d] - 0.5 * eps * grad_clipped;
+        }
+
+        // Full step for position: q(t + ε) = q(t) + ε·p(t + ε/2)/m
+        for (var d = 0u; d < dim; d = d + 1u) {
+            pos_f32[d] = clamp(pos_f32[d] + eps * vel_f32[d] / m, pos_min, pos_max);
+        }
+
+        // Compute gradient at new position for second half-step
+        compute_gradient_full(pos_f32, dim, uniforms.loss_fn, &grad);
+
+        // Half step for momentum: p(t + ε) = p(t + ε/2) - (ε/2)∇U(q(t + ε))
+        for (var d = 0u; d < dim; d = d + 1u) {
+            let grad_clipped = clamp(grad[d], -10.0, 10.0);
+            vel_f32[d] = vel_f32[d] - 0.5 * eps * grad_clipped;
+        }
+    }
+
+    // Compute final energy
+    let energy = compute_loss(pos_f32, dim, uniforms.loss_fn);
+
+    // Write back to SoA buffers (coalesced writes)
+    for (var d = 0u; d < dim; d = d + 1u) {
+        positions[d * pc + idx] = f16(pos_f32[d]);
+        velocities[d * pc + idx] = f16(vel_f32[d]);
+    }
+
+    // Update scalar fields
+    var s = scalars[idx];
+    s.energy = energy;
+    s.kinetic_energy = compute_kinetic_energy(vel_f32, dim, m);
+    scalars[idx] = s;
+}
+
+// ============================================================================
+// HMC Pass 3: METROPOLIS ACCEPT/REJECT
+// Accept proposal with probability min(1, exp(-ΔH))
+// where ΔH = H_final - H_initial = (U_f + K_f) - (U_i + K_i)
+// ============================================================================
+@compute @workgroup_size(256)
+fn accept_reject(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let idx = global_id.x;
+    let pc = uniforms.particle_count;
+    if idx >= pc { return; }
+
+    let dim = uniforms.dim;
+
+    // Read initial (proposal) and current scalars
+    let initial_scalars = proposal_scalars[idx];
+    let current_scalars = scalars[idx];
+
+    // Compute Hamiltonians: H = U + K
+    let H_initial = initial_scalars.energy + initial_scalars.kinetic_energy;
+    let H_current = current_scalars.energy + current_scalars.kinetic_energy;
+    let delta_H = H_current - H_initial;
+
+    // Accept probability: min(1, exp(-ΔH/T))
+    // Note: At T=1, this is standard HMC. At other T, we scale appropriately.
+    let accept_prob = min(1.0, exp(-delta_H / max(uniforms.temperature, 0.001)));
+
+    // Random number for accept/reject decision
+    let u = rand(uniforms.seed + idx * 9973u + 123456u);
+
+    if u < accept_prob {
+        // Accept: keep current state (already there in SoA buffers)
+        accept_flags[idx] = 1u;
+
+        // ENTROPY EXTRACTION (at high temperature)
+        if uniforms.temperature > 1.0 {
+            var entropy = current_scalars.entropy_bits;
+            for (var d = 0u; d < dim; d = d + 1u) {
+                let pos_val = f32(positions[d * pc + idx]);
+                let pos_bits = bitcast<u32>(pos_val * 1e6);
+                entropy = entropy ^ hash(pos_bits + idx * 1000u + d);
+            }
+            var s = current_scalars;
+            s.entropy_bits = entropy;
+            scalars[idx] = s;
+            entropy_output[idx] = entropy;
+        }
+    } else {
+        // Reject: restore initial position from proposal (but negate momentum)
+        for (var d = 0u; d < dim; d = d + 1u) {
+            positions[d * pc + idx] = proposal_pos[d * pc + idx];
+            velocities[d * pc + idx] = -proposal_vel[d * pc + idx];  // Negate momentum
+        }
+        scalars[idx] = initial_scalars;
+        accept_flags[idx] = 0u;
+    }
 }

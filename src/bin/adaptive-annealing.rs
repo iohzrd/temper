@@ -227,7 +227,6 @@ impl RunState {
             t_start,
             func.loss_function(),
         );
-        system.set_repulsion_samples(64);
         let particles = system.read_particles();
 
         Self {
@@ -242,45 +241,9 @@ impl RunState {
         }
     }
 
-    fn step(&mut self, temperature: f32, func: TestFunction) {
+    fn step(&mut self, temperature: f32, _func: TestFunction) {
         self.temperature = temperature;
         self.system.set_temperature(temperature);
-
-        let t_start = func.t_start();
-        let repulsion = if temperature > t_start * 0.2 {
-            64
-        } else if temperature > t_start * 0.02 {
-            32
-        } else {
-            0
-        };
-        self.system.set_repulsion_samples(repulsion);
-
-        // Adaptive dt based on function and temperature
-        let dt = match func {
-            TestFunction::Rastrigin => {
-                if temperature > 0.1 {
-                    0.01
-                } else if temperature > 0.01 {
-                    0.005
-                } else {
-                    0.002
-                }
-            }
-            TestFunction::Schwefel => {
-                if temperature > 100.0 {
-                    1.0
-                } else if temperature > 10.0 {
-                    0.5
-                } else if temperature > 1.0 {
-                    0.2
-                } else {
-                    0.1
-                }
-            }
-        };
-        self.system.set_dt(dt);
-
         self.system.step();
         self.particles = self.system.read_particles();
 
@@ -312,7 +275,6 @@ impl RunState {
             t_start,
             func.loss_function(),
         );
-        self.system.set_repulsion_samples(64);
         self.particles = self.system.read_particles();
         self.min_energy = f32::MAX;
         self.mean_energy = 0.0;

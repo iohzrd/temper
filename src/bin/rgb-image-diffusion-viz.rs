@@ -140,9 +140,7 @@ fn create_system(pattern: Pattern) -> ThermodynamicSystem {
         Pattern::Checkerboard => generate_checkerboard_wgsl(),
         Pattern::Rings => generate_rings_wgsl(),
     };
-    let mut system = ThermodynamicSystem::with_expr(PARTICLE_COUNT, RGB_DIM, T_START, expr);
-    system.set_repulsion_samples(8);
-    system
+    ThermodynamicSystem::with_expr(PARTICLE_COUNT, RGB_DIM, T_START, expr)
 }
 
 fn generate_target(pattern: Pattern) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -527,7 +525,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 
 fn generate_red_circle_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let size = 16.0;
     let center = size / 2.0;
     let radius = size / 3.0;
@@ -552,7 +550,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 
         let diff_r = pos[i] - goal_r;
         let diff_g = pos[i + 256u] - goal_g;
-        let diff_b = pos[i + 512u] - goal_b;
+        let diff_b = pos[i + 256u] - goal_b;
         mse = mse + diff_r * diff_r + diff_g * diff_g + diff_b * diff_b;
     }
     return mse / 768.0;
@@ -560,7 +558,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 768u {
         return 0.0;
     }
@@ -636,7 +634,7 @@ fn hsv_to_b(h: f32) -> f32 {
     return 1.0 - f;
 }
 
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var mse = 0.0;
     for (var i = 0u; i < 256u; i = i + 1u) {
         let x = i % 16u;
@@ -648,7 +646,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 
         let diff_r = pos[i] - goal_r;
         let diff_g = pos[i + 256u] - goal_g;
-        let diff_b = pos[i + 512u] - goal_b;
+        let diff_b = pos[i + 256u] - goal_b;
         mse = mse + diff_r * diff_r + diff_g * diff_g + diff_b * diff_b;
     }
     return mse / 768.0;
@@ -656,7 +654,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 768u {
         return 0.0;
     }
@@ -684,7 +682,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn generate_checkerboard_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var mse = 0.0;
     for (var i = 0u; i < 256u; i = i + 1u) {
         let y = i / 16u;
@@ -704,7 +702,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 
         let diff_r = pos[i] - goal_r;
         let diff_g = pos[i + 256u] - goal_g;
-        let diff_b = pos[i + 512u] - goal_b;
+        let diff_b = pos[i + 256u] - goal_b;
         mse = mse + diff_r * diff_r + diff_g * diff_g + diff_b * diff_b;
     }
     return mse / 768.0;
@@ -712,7 +710,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 768u {
         return 0.0;
     }
@@ -742,7 +740,7 @@ fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
 
 fn generate_rings_wgsl() -> temper::expr::Expr {
     let loss_code = r#"
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     let size = 16.0;
     let center = size / 2.0;
 
@@ -762,7 +760,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 
         let diff_r = pos[i] - goal_r;
         let diff_g = pos[i + 256u] - goal_g;
-        let diff_b = pos[i + 512u] - goal_b;
+        let diff_b = pos[i + 256u] - goal_b;
         mse = mse + diff_r * diff_r + diff_g * diff_g + diff_b * diff_b;
     }
     return mse / 768.0;
@@ -770,7 +768,7 @@ fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
 "#;
 
     let grad_code = r#"
-fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {
+fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {
     if d_idx >= 768u {
         return 0.0;
     }

@@ -38,7 +38,6 @@ fn main() {
 
         let mut system =
             ThermodynamicSystem::with_loss_function(particle_count, *dim, 2.0, loss_fn.clone());
-        system.set_repulsion_samples(0); // Disable for speed
 
         // Warmup
         for _ in 0..10 {

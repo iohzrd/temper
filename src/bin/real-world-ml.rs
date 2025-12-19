@@ -216,7 +216,6 @@ fn train_iris() -> bool {
     );
 
     let mut system = ThermodynamicSystem::with_expr(particles, dim, 2.0, iris_loss);
-    system.set_repulsion_samples(64);
 
     let mut scheduler = AdaptiveScheduler::new(2.0, 0.001, 0.1, dim);
 
@@ -508,7 +507,6 @@ fn train_wine() -> bool {
     );
 
     let mut system = ThermodynamicSystem::with_expr(particles, dim, 1.5, wine_loss);
-    system.set_repulsion_samples(64);
 
     let mut scheduler = AdaptiveScheduler::new(1.5, 0.001, 0.05, dim);
 
@@ -633,7 +631,6 @@ fn train_timeseries() -> bool {
     );
 
     let mut system = ThermodynamicSystem::with_expr(particles, dim, 1.5, ts_loss);
-    system.set_repulsion_samples(64);
 
     let mut scheduler = AdaptiveScheduler::new(1.5, 0.001, 0.01, dim);
 
@@ -788,7 +785,6 @@ fn train_mnist_pca() -> bool {
     );
 
     let mut system = ThermodynamicSystem::with_expr(particles, dim, 2.5, mnist_loss);
-    system.set_repulsion_samples(64);
 
     let mut scheduler = AdaptiveScheduler::new(2.5, 0.001, 0.1, dim);
 

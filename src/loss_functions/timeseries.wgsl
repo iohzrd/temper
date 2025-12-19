@@ -22,7 +22,7 @@ fn sine_value(idx: u32) -> f32 {
 
 // sigmoid is already defined in the base shader
 
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var total_loss = 0.0;
 
     // Iterate through windows

@@ -98,7 +98,6 @@ fn main() {
     println!();
 
     let mut system = ThermodynamicSystem::with_expr(particle_count, DIM, 2.0, loss_fn);
-    system.set_repulsion_samples(32); // Some diversity
 
     let start = Instant::now();
     let mut best_loss = f32::MAX;
@@ -256,7 +255,7 @@ fn build_nn_loss(dataset: &[Sample]) -> temper::expr::Expr {
     let mut grad_code = String::new();
 
     // Generate loss function
-    loss_code.push_str("fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {\n");
+    loss_code.push_str("fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {\n");
     loss_code.push_str("    var total_loss = 0.0;\n\n");
 
     // Embed dataset as constants (use 40 samples for faster shader compilation)
@@ -330,8 +329,7 @@ fn build_nn_loss(dataset: &[Sample]) -> temper::expr::Expr {
     loss_code.push_str("}\n");
 
     // Numerical gradient (simpler than analytical for this size)
-    grad_code
-        .push_str("fn custom_gradient(pos: array<f32, 4096>, dim: u32, d_idx: u32) -> f32 {\n");
+    grad_code.push_str("fn custom_gradient(pos: array<f32, 256>, dim: u32, d_idx: u32) -> f32 {\n");
     grad_code.push_str(&format!("    if d_idx >= {}u {{\n", DIM));
     grad_code.push_str("        return 0.0;\n");
     grad_code.push_str("    }\n");

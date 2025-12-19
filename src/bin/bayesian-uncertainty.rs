@@ -31,7 +31,6 @@ fn main() {
 
     let mut system =
         ThermodynamicSystem::with_loss_function(PARTICLE_COUNT, DIM, 2.0, LossFunction::MlpXor);
-    system.set_repulsion_samples(0); // Pure optimization, no SVGD
 
     // Anneal to find good weights
     let anneal_steps = 2000;
@@ -71,9 +70,8 @@ fn main() {
     println!("-------------------------------------");
     println!("Now we sample from p(weights|data) instead of optimizing.\n");
 
-    // Reset to sampling temperature with SVGD repulsion
+    // Reset to sampling temperature
     system.set_temperature(0.1);
-    system.set_repulsion_samples(64); // Enable SVGD for diversity
 
     // Burn-in: let particles spread across posterior
     let burnin_steps = 1000;

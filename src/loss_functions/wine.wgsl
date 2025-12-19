@@ -78,7 +78,7 @@ const WINE_Y: array<f32, 30> = array<f32, 30>(
 
 // sigmoid is already defined in the base shader
 
-fn custom_loss(pos: array<f32, 4096>, dim: u32) -> f32 {
+fn custom_loss(pos: array<f32, 256>, dim: u32) -> f32 {
     var total_loss = 0.0;
 
     for (var i = 0u; i < WINE_SIZE; i = i + 1u) {
